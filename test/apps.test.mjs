@@ -256,6 +256,48 @@ test("⭐ /add <名字>：现在没有可用链接也照样加进监控（App �
   assert.match(all, /一旦出现能加入的链接，我会主动告诉你/);
 });
 
+test("⭐ /add 微信：App Store 里精确同名时以它为准，不能被「微信读书/微信输入法」带偏", async () => {
+  // 老板实测截图里的场景：/add 微信 列出「微信输入法」「微信读书」却唯独不提微信本身，
+  // 还被判成"有歧义"拒绝 —— 因为「微信」没有 TF 链接，精确同名匹配在**TF 来源**里失败了。
+  // 但 App Store 里明明有名字正好是「微信」的 App。
+  const itunes = { resultCount: 2, results: [
+    { trackId: 414478124, trackName: "微信", bundleId: "com.tencent.xin", version: "8.0", trackViewUrl: "" },
+    { trackId: 952059546, trackName: "微信读书", bundleId: "com.tencent.weread", version: "9.1", trackViewUrl: "" },
+  ] };
+  const { f } = makeFetch({
+    itunes, depRows: [],
+    tfstorePage: `<script type="application/ld+json">{"@graph":[{"@type":"ItemList","itemListElement":[
+      {"@type":"ListItem","url":"https://tfstore.top/zh-CN/apps/5MWjLpYl","name":"微信读书"},
+      {"@type":"ListItem","url":"https://tfstore.top/zh-CN/apps/iSTXkF4K","name":"微信输入法"}]}]}</script>`,
+  });
+  const state = normalizeState(null);
+  const { sent, notifier } = collector();
+  await handleCommand({ cfg: { telegram: {} }, state, notifier, text: "/add 微信", fetchImpl: f });
+  const all = sent.join("\n").replace(/<[^>]+>/g, "");   // 去标签再断言（消息里有 <b>）
+
+  assert.ok(state.links["app:414478124"], "要按「微信」本体建 App 级监控，实际 key：" + Object.keys(state.links));
+  assert.ok(!state.links["5MWjLpYl"] && !state.links["iSTXkF4K"], "绝不能被名字里含「微信」的其它 App 带偏");
+  assert.ok(!/匹配到 2 个 App/.test(all), "精确同名时不该判成有歧义");
+  assert.match(all, /已加入监控（App 级）：微信/);
+  assert.match(all, /都不是「微信」本身/, "要顺带说清那些只是名字里含「微信」的别的 App");
+});
+
+test("/add 微信读书：精确同名且有链接时，照旧挂链接（别被新逻辑误伤）", async () => {
+  const itunes = { resultCount: 1, results: [
+    { trackId: 952059546, trackName: "微信读书", bundleId: "com.tencent.weread", version: "9.1", trackViewUrl: "" },
+  ] };
+  const { f } = makeFetch({
+    itunes, depRows: [],
+    tfstorePage: `<script type="application/ld+json">{"@graph":[{"@type":"ItemList","itemListElement":[
+      {"@type":"ListItem","url":"https://tfstore.top/zh-CN/apps/5MWjLpYl","name":"微信读书"}]}]}</script>`,
+  });
+  const state = normalizeState(null);
+  const { sent, notifier } = collector();
+  await handleCommand({ cfg: { telegram: {} }, state, notifier, text: "/add 微信读书", fetchImpl: f });
+  assert.ok(state.links["5MWjLpYl"], "要真的把链接挂上，实际：" + Object.keys(state.links));
+  assert.match(sent.join("\n").replace(/<[^>]+>/g, ""), /已加入监控：微信读书/);
+});
+
 test("⭐ /joined 的效果：状态照常更新，但**不发提醒**（带对照组）", async () => {
   const { runMonitor } = await import("../src/core.js");
   const mk = (joined) => normalizeState({

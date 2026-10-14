@@ -11,7 +11,7 @@
  * 用法：整个文件贴进 Cloudflare 控制台的 Worker 编辑器即可。
  * 该产物已被 test/handler.test.mjs 实际 import 并跑过断言。
  *
- * 源码指纹（sha256 前 16 位）：0ca1e3e72c1d60ff
+ * 源码指纹（sha256 前 16 位）：002e84664d3ec234
  * ⚠️ 这里刻意**不放构建时间** —— 放了构建就不可复现，
  *    CI 里"产物必须与源码同步"那条检查会永远失败（这是被 CI 抓出来的）。
  */
@@ -1979,7 +1979,25 @@ async function handleCommand({ cfg, state, notifier, text, chatId, log = () => {
       const name = parts.slice(1).join(" ").trim();
       await notifier.send(`正在按名字找「${esc(name)}」的 TestFlight 链接…`);
       const look = await lookupByName({ term: name, fetchImpl, log });
-      const groups = matchAppsByName(look.merged, name);
+
+      // ⭐ App Store 里名字**正好是它**的 App —— 这是"用户想加的是哪个 App"最强的信号。
+      //
+      // 为什么必须先看它：`/add 微信` 时，tfstore/departures 里只有「微信读书」「微信输入法」，
+      // 于是"精确同名"匹配失败、退回"名字里含微信"，最后被判成"有歧义"而**拒绝** ——
+      // 列了一堆候选，却**唯独不提用户要加的微信本身**（它只是没有公开 TF 链接而已）。
+      const lowName = name.toLowerCase();
+      const exactApp = (look.itunes || [])
+        .find((a) => String(a.trackName || "").trim().toLowerCase() === lowName);
+      const partialGroups = matchAppsByName(look.merged, name);
+      let groups = partialGroups;
+      if (exactApp) {
+        // 只认**名字完全相等**的链接条目。
+        // ⚠️ 这里不能用 includes —— 「微信读书」「微信输入法」都"包含"微信，
+        // 用 includes 筛等于没筛（我第一版就是这么写错的，测出来还是 2 组）。
+        // App Store 里那个精确同名的 App 定义了"身份"，TF 条目必须同名才算同一个 App。
+        const mine = look.merged.filter((m) => String(m.appName || "").trim().toLowerCase() === lowName);
+        groups = mine.length ? groupByName(mine, (x) => x.appName) : [];
+      }
 
       if (!groups.length) {
         // ⭐ 没有可用链接也**照样加进监控** —— 这就是「App 级监控」。
@@ -1987,7 +2005,9 @@ async function handleCommand({ cfg, state, notifier, text, chatId, log = () => {
         // 不能只认"名字完全相等" —— iTunes 里的名字常带后缀
         // （「高德地图-北斗卫星无网导航…」），完全相等会一条都匹配不上。
         // 用和 enrichApp 同一套 nameMatch 打分，认不准就不填 id（同一条纪律）。
-        const { hit: bestIt, score: itScore } = bestItunesHit(look.itunes || [], name);
+        const auto = bestItunesHit(look.itunes || [], name);
+        const bestIt = exactApp || auto.hit;
+        const itScore = exactApp ? 3 : auto.score;
         // 标签用**用户输入的名字**（简短、他自己认得），iTunes 的完整名放附注里
         const label = name;
         const appStoreName = bestIt ? bestIt.trackName : "";
@@ -2018,6 +2038,13 @@ async function handleCommand({ cfg, state, notifier, text, chatId, log = () => {
           "· **一旦出现能加入的链接，我会主动告诉你**",
           "· 也可以随时 <code>/find " + esc(name.slice(0, 20)) + "</code> 手动查一次",
           (bestIt && itScore < 3) ? `<i>App Store 匹配到的是：${esc(appStoreName)}（近似名匹配，不确定就核对一下）</i>` : "",
+          // 精确同名时，顺手提一句"名字里含它的其它 App" —— 用户可能其实想加那些
+          (exactApp && partialGroups.length) ? [
+            "",
+            `<i>顺便说：tfstore / departures 上名字里含「${esc(name)}」的是这些（都不是「${esc(name)}」本身）：</i>`,
+            ...partialGroups.slice(0, 4).map((g) => `<i>· ${esc(g.name)}　` +
+              g.items.slice(0, 3).map((x) => `<code>/add ${esc(x.code)}</code>`).join("　") + `</i>`),
+          ].join("\n") : "",
         ].filter(Boolean).join("\n"));
         return;
       }
