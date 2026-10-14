@@ -202,22 +202,67 @@ test("/add：可以手动覆盖 appstore= / departures=", async () => {
   assert.equal(rec.label, "我的番茄");
 });
 
-test("/add：给的不是 join 码时，指路到 /find 而不是只说看不懂", async () => {
+test("⭐ /add <名字>：按名字直接加进监控（自己找链接、自己挑能进的那个）", async () => {
+  // 语义分工：/find 是「查」，/add <名字> 是「查完就加」。
+  // 这条测试钉住的就是这个分工 —— 以前 /add 只收链接，用户得先 /find 再复制码，两步。
+  const { f } = makeFetch({
+    tfstorePage: `<script type="application/ld+json">{"@graph":[{"@type":"ItemList","itemListElement":[
+      {"@type":"ListItem","url":"https://tfstore.top/zh-CN/apps/dTUO1uyt","name":"番茄小说"},
+      {"@type":"ListItem","url":"https://tfstore.top/zh-CN/apps/zzzzzzzz","name":"番茄小说"}]}]}</script>`,
+  });
   const state = normalizeState(null);
   const { sent, notifier } = collector();
-  await handleCommand({ cfg: { telegram: {} }, state, notifier, text: "/add 微信读书" });
+  await handleCommand({
+    cfg: { telegram: {} }, state, notifier,
+    text: "/add 番茄小说", fetchImpl: f,
+  });
   const all = sent.join("\n");
-  assert.match(all, /\/find/);
-  assert.match(all, /join 码长这样/);
-  assert.equal(Object.keys(state.links).length, 0);
+  assert.equal(Object.keys(state.links).length, 1, "应该真的加进去了，而且只加一个");
+  assert.ok(state.links.dTUO1uyt || state.links.zzzzzzzz, "加的是搜到的码之一");
+  assert.match(all, /已加入监控/);
+  assert.match(all, /还有 1 个别的链接/, "要告诉用户还有别的码可选");
 });
 
-test("/add：不带参数时给用法", async () => {
+test("/add <名字>：名字有歧义时**不替用户猜**，列出来让他选", async () => {
+  const { f } = makeFetch({
+    tfstorePage: `<script type="application/ld+json">{"@graph":[{"@type":"ItemList","itemListElement":[
+      {"@type":"ListItem","url":"https://tfstore.top/zh-CN/apps/aaaaaaaa","name":"微信读书"},
+      {"@type":"ListItem","url":"https://tfstore.top/zh-CN/apps/bbbbbbbb","name":"微信输入法"}]}]}</script>`,
+  });
+  const state = normalizeState(null);
+  const { sent, notifier } = collector();
+  await handleCommand({ cfg: { telegram: {} }, state, notifier, text: "/add 微信", fetchImpl: f });
+  const all = sent.join("\n");
+  assert.equal(Object.keys(state.links).length, 0, "有歧义时不该擅自加任何一个");
+  assert.match(all, /匹配到 2 个 App/);
+  assert.match(all, /我不替你猜/);
+  assert.match(all, /\/add aaaaaaaa/);
+  assert.match(all, /\/add bbbbbbbb/);
+});
+
+test("/add <名字>：名字找不到时给出可执行的下一步，而不是只说失败", async () => {
+  const { f } = makeFetch({ tfstorePage: "", depRows: [], itunes: { resultCount: 0, results: [] } });
+  const state = normalizeState(null);
+  const { sent, notifier } = collector();
+  await handleCommand({ cfg: { telegram: {} }, state, notifier, text: "/add 不存在的App名", fetchImpl: f });
+  const all = sent.join("\n");
+  assert.equal(Object.keys(state.links).length, 0);
+  assert.match(all, /没找到名字匹配/);
+  assert.match(all, /\/find/, "要指路到 /find");
+});
+
+test("/add：不带参数时给用法，且说清两种主要用法", async () => {
   const state = normalizeState(null);
   const { sent, notifier } = collector();
   await handleCommand({ cfg: { telegram: {} }, state, notifier, text: "/add" });
-  assert.match(sent.join("\n"), /用法/);
+  const all = sent.join("\n");
+  assert.match(all, /用法/);
+  assert.match(all, /按名字加/, "要说清 /add <名字> 这条路");
+  assert.match(all, /\/find/, "也要说清 /find 是查");
 });
+
+
+
 
 // ───────────────────── /apps 与 /find ─────────────────────
 

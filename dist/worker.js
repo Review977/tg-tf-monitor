@@ -11,7 +11,7 @@
  * 用法：整个文件贴进 Cloudflare 控制台的 Worker 编辑器即可。
  * 该产物已被 test/handler.test.mjs 实际 import 并跑过断言。
  *
- * 源码指纹（sha256 前 16 位）：e1e888eef747476e
+ * 源码指纹（sha256 前 16 位）：5fc035bd6fdcb1ab
  * ⚠️ 这里刻意**不放构建时间** —— 放了构建就不可复现，
  *    CI 里"产物必须与源码同步"那条检查会永远失败（这是被 CI 抓出来的）。
  */
@@ -894,10 +894,14 @@ function findHints({ term, itunes = [], tfs = [], deps = [] }) {
   return out;
 }
 
-async function findApp({ state, query, fetchImpl, log = () => {} }) {
-  const term = String(query || "").trim();
-  if (!term) return "用法：<code>/find &lt;App 名字或关键词&gt;</code>";
-
+/**
+ * 按名字搜三路（App Store / departures / tfstore），把 departures 的 app 页反解成码，
+ * 再给每个码补上真实状态。
+ *
+ * 抽出来是为了让 `/find`（只查）和 `/add <名字>`（查完就加）**用同一套逻辑** ——
+ * 两边各写一份的话，迟早会出现"find 搜得到、add 搜不到"这种不一致。
+ */
+async function lookupByName({ term, fetchImpl, log = () => {} }) {
   const [it, dp, tfs] = await Promise.all([
     probeItunesSearch(term, { fetchImpl }).catch((e) => ({ hits: [], error: e.message })),
     probeDeparturesSearch(term, { fetchImpl }).catch((e) => ({ hits: [], error: e.message })),
@@ -905,8 +909,71 @@ async function findApp({ state, query, fetchImpl, log = () => {} }) {
   ]);
   const itunes = it.hits || [];
   const deps = dp.hits || [];
-  log(`  /find「${term}」iTunes=${itunes.length} departures=${deps.length} tfstore=${tfs.length}` +
+  log(`  搜「${term}」iTunes=${itunes.length} departures=${deps.length} tfstore=${tfs.length}` +
     (it.error ? ` iTunes错误=${it.error}` : "") + (dp.error ? ` departures错误=${dp.error}` : ""));
+
+  // departures 的 app 页里带着 join 链接 —— 反解出码才能给出"能直接点"的命令
+  const depResolved = (await Promise.all(deps.slice(0, 6).map(async (d) => {
+    try {
+      const r = await probeDepartures(d.appId, { fetchImpl });
+      return r && r.code ? { code: r.code, appName: r.appName || d.name, appId: d.appId } : null;
+    } catch {
+      return null;
+    }
+  }))).filter(Boolean);
+
+  // 按码合并两个来源（同一份链接常常两边都有），再补状态
+  const merged = mergeFindResults(tfs, depResolved);
+  const withStatus = await Promise.all(merged.slice(0, 8).map(async (m) => {
+    try {
+      const j = await probeJoin(m.code, { fetchImpl });
+      return { ...m, state: j.state };
+    } catch {
+      return { ...m, state: "" };
+    }
+  }));
+  return { itunes, itErr: it.error || "", deps, depErr: dp.error || "", merged: withStatus };
+}
+
+/** 状态优先级：能进的排前面。`/add <名字>` 靠它挑"最值得加"的那个码。 */
+const STATE_RANK = { open: 0, full: 1, closed: 2, invalid: 3, error: 4 };
+function pickBestLink(items) {
+  const list = [...(items || [])];
+  list.sort((a, b) => {
+    const ra = STATE_RANK[a.state] === undefined ? 9 : STATE_RANK[a.state];
+    const rb = STATE_RANK[b.state] === undefined ? 9 : STATE_RANK[b.state];
+    if (ra !== rb) return ra - rb;
+    return String(a.code) < String(b.code) ? -1 : 1;   // 同状态时顺序确定
+  });
+  return list[0] || null;
+}
+
+/**
+ * 按名字挑出候选 App。优先**精确同名**，没有再退回"名字里含关键词"。
+ * 返回按 App 名分好的组 —— 组数 > 1 就说明"这个名字有歧义"，不能替用户瞎选。
+ */
+function matchAppsByName(entries, term) {
+  const t = String(term || "").trim().toLowerCase();
+  if (!t) return [];
+  const exact = [], partial = [];
+  for (const e of entries || []) {
+    const n = String(e.appName || "").trim();
+    if (!n) continue;
+    const ln = n.toLowerCase();
+    if (ln === t) exact.push(e);
+    else if (ln.includes(t)) partial.push(e);
+  }
+  return groupByName(exact.length ? exact : partial, (x) => x.appName);
+}
+
+async function findApp({ state, query, fetchImpl, log = () => {} }) {
+  const term = String(query || "").trim();
+  if (!term) return "用法：<code>/find &lt;App 名字或关键词&gt;</code>";
+
+  const { itunes, itErr: it_error, deps, depErr: dp_error, merged: withStatus } =
+    await lookupByName({ term, fetchImpl, log });
+  const it = { error: it_error };
+  const dp = { error: dp_error };
 
   const L = [`<b>「${esc(term)}」的搜索结果</b>`];
   const watched = new Set(Object.keys(state.links || {}));
@@ -927,29 +994,6 @@ async function findApp({ state, query, fetchImpl, log = () => {} }) {
   } else {
     L.push("", "App Store：没搜到");
   }
-
-  // departures 的 app 页里带着 join 链接 —— 反解出码，才能给出"能直接点"的命令。
-  // 并行请求，别串行等。失败的条目就只留 id（不因此整体失败）。
-  const depResolved = (await Promise.all(deps.slice(0, 6).map(async (d) => {
-    try {
-      const r = await probeDepartures(d.appId, { fetchImpl });
-      return r && r.code ? { code: r.code, appName: r.appName || d.name, appId: d.appId } : null;
-    } catch {
-      return null;
-    }
-  }))).filter(Boolean);
-
-  // 按码合并两个来源（同一份链接常常两边都有）
-  const merged = mergeFindResults(tfs, depResolved);
-  // 补状态：这才是用户最想知道的"哪个能进" —— 否则他得一个个试
-  const withStatus = await Promise.all(merged.slice(0, 8).map(async (m) => {
-    try {
-      const j = await probeJoin(m.code, { fetchImpl });
-      return { ...m, state: j.state };
-    } catch {
-      return { ...m, state: "" };
-    }
-  }));
 
   if (withStatus.length) {
     L.push("", "<b>找到的 TestFlight 链接</b>");
@@ -972,7 +1016,8 @@ async function findApp({ state, query, fetchImpl, log = () => {} }) {
   for (const note of findHints({ term, itunes, tfs: withStatus, deps })) L.push("", `<i>${note}</i>`);
 
   L.push("", "<b>怎么加</b>",
-    "· 点上面的 <code>/add &lt;码&gt;</code> 直接加（App Store id 与 departures id 会自动补齐）",
+    "· 直接 <code>/add &lt;App名字&gt;</code> —— 它会自己挑最值得加的那个码",
+    "· 或点上面的 <code>/add &lt;码&gt;</code> 指定（App Store id 与 departures id 会自动补齐）",
     "· 只有 departures 的 app id → <code>/add dep=&lt;id&gt;</code>（会自动反解出 TF 码）",
     "· 要手动指定 → <code>/add &lt;链接&gt; 名称 appstore=&lt;id&gt; departures=&lt;id&gt;</code>");
   return L.join("\n");
@@ -1689,11 +1734,16 @@ function renderLinks(state) {
 const HELP = `<b>tg-tf-monitor 命令</b>
 
 <b>加 App</b>
-/find &lt;名字&gt; — 按名字搜 App Store id / departures.to / tfstore 上的 TF 码
-/add &lt;TestFlight链接&gt; [名称] [appstore=&lt;id&gt;] [departures=&lt;id&gt;]
-    加一个 App 进监控。App Store id、bundle id、departures.to id 会**自动补齐**
+/add &lt;名字&gt; — 按名字**加进监控**：自己找链接、自己挑能进的那个
+    例：<code>/add 微信读书</code>
+/add &lt;TestFlight链接或join码&gt; — 手上有链接时直接用
+/add dep=&lt;id&gt; — 只有 departures 的 app id 时（会反解出 TF 码）
+    加的时候 App Store id、bundle id、departures.to id 会**自动补齐**
 /apps — 看监控中的 App 都盯了什么
 /del &lt;码&gt; — 移出监控
+
+<b>查 App（只查，不改监控列表）</b>
+/find &lt;名字&gt; — 按名字查 TF 链接：三路并搜，列出码 + 状态 + departures id
 
 <b>看状态</b>
 /status — 当前监控状态
@@ -1762,14 +1812,23 @@ async function handleCommand({ cfg, state, notifier, text, chatId, log = () => {
     ].join("\n"));
   } else if (cmd === "/add") {
     if (parts.length < 2) {
-      await notifier.send("用法：<code>/add &lt;TestFlight链接或join码&gt; [名称] [appstore=&lt;id&gt;] [departures=&lt;id&gt;]</code>\n" +
-        "也可以用 departures 的 app id：<code>/add dep=&lt;id&gt;</code>（会自动反解出 TF 码）\n" +
-        "不知道链接？先发 <code>/find &lt;App名字&gt;</code>");
+      await notifier.send("用法：<code>/add &lt;App名字&gt;</code>　或　<code>/add &lt;TestFlight链接/join码&gt;</code>\n" +
+        "· 按名字加最省事：<code>/add 微信读书</code>（自己找链接、自己挑能进的那个）\n" +
+        "· 有链接就直接给：<code>/add https://testflight.apple.com/join/dTUO1uyt</code>\n" +
+        "· 只有 departures 的 app id：<code>/add dep=&lt;id&gt;</code>\n" +
+        "· 要手动指定：<code>/add &lt;链接&gt; 名称 appstore=&lt;id&gt; departures=&lt;id&gt;</code>\n" +
+        "只想查不想加 → <code>/find &lt;App名字&gt;</code>");
       return;
     }
-    let arg = parts[1].trim();
-    let depId = parseDeparturesArg(arg);
+    const arg = parts[1].trim();
+    const depId = parseDeparturesArg(arg);
+    const asCode = depId ? "" : (firstJoinCode(arg) || (/^[A-Za-z0-9]{6,14}$/.test(arg) ? arg : ""));
+    const opts = {};
     let code = "";
+    let givenName = "";
+    let extraNote = "";
+    let derivedDepartures = "";
+
     if (depId) {
       // /add dep=<id>：departures 的 app 页里带着 join 链接，直接反解，省得用户先去别处找码
       await notifier.send(`正在从 departures.to 反解 <code>${esc(depId)}</code> 的 TestFlight 码…`);
@@ -1783,31 +1842,63 @@ async function handleCommand({ cfg, state, notifier, text, chatId, log = () => {
         return;
       }
       code = d.code;
-      arg = d.code;
+      opts.departures = depId;
+      givenName = parts.slice(2).filter((t) => !/^(appstore|departures|bundle)=/i.test(t)).join(" ").trim();
+    } else if (asCode) {
+      code = asCode;
+      // 名称与可选的手动指定：/add <码> 名称 appstore=123 departures=456
+      const nameParts = [];
+      for (const t of parts.slice(2)) {
+        const m = /^(appstore|departures|bundle)=(.+)$/i.exec(t);
+        if (m) opts[m[1].toLowerCase()] = m[2].trim();
+        else nameParts.push(t);
+      }
+      givenName = nameParts.join(" ").trim();
     } else {
-      code = firstJoinCode(arg) || arg;
-      if (!JOIN_CODE_RE.test(code)) {
-        await notifier.send(
-          `这看着不是 TestFlight join 码：${esc(arg)}\n` +
-          `· 想按名字找 → <code>/find ${esc(arg.slice(0, 30))}</code>\n` +
-          `· join 码长这样：<code>dTUO1uyt</code>（6-14 位字母数字）\n` +
-          `· 只有 departures 的 app id → <code>/add dep=&lt;id&gt;</code>`
-        );
+      // ── 按名字加：/add 微信读书 ──
+      // 语义分工：/find 是"查"，/add <名字> 是"查完就加"。
+      // 两者共用 lookupByName()，免得出现"find 搜得到、add 搜不到"这种不一致。
+      const name = parts.slice(1).join(" ").trim();
+      await notifier.send(`正在按名字找「${esc(name)}」的 TestFlight 链接…`);
+      const look = await lookupByName({ term: name, fetchImpl, log });
+      const groups = matchAppsByName(look.merged, name);
+
+      if (!groups.length) {
+        const exact = (look.itunes || []).find((a) => String(a.trackName || "").trim() === name);
+        await notifier.send(exact
+          ? `App Store 里有「${esc(name)}」（id <code>${esc(exact.trackId)}</code>），` +
+            `但 tfstore / departures 都没有它的公开 TF 链接 —— 加不了。\n` +
+            `<i>如果你手上有链接，直接 <code>/add &lt;链接&gt;</code></i>`
+          : `没找到名字匹配「${esc(name)}」的 TestFlight 链接。\n` +
+            `· 换个关键词查一下 → <code>/find ${esc(name.slice(0, 30))}</code>\n` +
+            `· 手上有链接就直接 → <code>/add &lt;链接&gt;</code>`);
         return;
       }
+      if (groups.length > 1) {
+        // 名字有歧义时**不替用户猜** —— 猜错了会让他盯上一个完全不相干的 App
+        const lines = [`「${esc(name)}」匹配到 ${groups.length} 个 App —— 我不替你猜，用完整名字再来一次，或直接点下面的命令：`];
+        for (const g of groups.slice(0, 6)) {
+          lines.push(`· ${esc(g.name)}`);
+          for (const it of g.items.slice(0, 4)) {
+            lines.push(`  <code>/add ${esc(it.code)}</code>${it.state ? " — " + esc(STATE_LABEL[it.state] || it.state) : ""}`);
+          }
+        }
+        await notifier.send(lines.join("\n"));
+        return;
+      }
+      const g = groups[0];
+      const best = pickBestLink(g.items);
+      code = best.code;
+      // 这个 id 是机器人**自己解析出来**的，不是用户给的 —— 来源要如实标 auto
+      if (best.departuresId) derivedDepartures = best.departuresId;
+      givenName = g.name || name;
+      const others = g.items.filter((x) => x.code !== best.code);
+      if (others.length) {
+        extraNote = `ℹ️ 这个 App 还有 ${others.length} 个别的链接：` +
+          others.slice(0, 4).map((x) => `<code>${esc(x.code)}</code>${x.state ? "（" + esc(STATE_LABEL[x.state] || x.state) + "）" : ""}`).join("、") +
+          `\n要一起盯就 <code>/add &lt;码&gt;</code>`;
+      }
     }
-
-    // 名称与可选的手动指定：/add <码> 名称 appstore=123 departures=456
-    const opts = {};
-    const nameParts = [];
-    for (const t of parts.slice(2)) {
-      const m = /^(appstore|departures|bundle)=(.+)$/i.exec(t);
-      if (m) opts[m[1].toLowerCase()] = m[2].trim();
-      else nameParts.push(t);
-    }
-    const givenName = nameParts.join(" ").trim();
-    // 反解出来的 departures id 直接绑上（用户显式给了 departures= 就以他的为准）
-    if (depId && !opts.departures) opts.departures = depId;
 
     await notifier.send(`正在补齐 <code>${esc(code)}</code> 的信息（探测链接 + 查 App Store + 查 departures.to）…`);
 
@@ -1826,6 +1917,7 @@ async function handleCommand({ cfg, state, notifier, text, chatId, log = () => {
     if (opts.bundle) rec.bundleId = opts.bundle;
     else if (e.bundleId) rec.bundleId = e.bundleId;
     if (opts.departures) { rec.departuresId = /^\d+$/.test(opts.departures) ? Number(opts.departures) : opts.departures; rec.departuresSource = "manual"; }
+    else if (derivedDepartures) { rec.departuresId = /^\d+$/.test(derivedDepartures) ? Number(derivedDepartures) : derivedDepartures; rec.departuresSource = "auto"; }
     else if (e.departuresId) { rec.departuresId = e.departuresId; rec.departuresSource = "auto"; }
     if (!rec.stateSince) rec.stateSince = nowStamp();
 
@@ -1840,6 +1932,7 @@ async function handleCommand({ cfg, state, notifier, text, chatId, log = () => {
       L.push("", "<b>需要留意</b>");
       for (const n of e.notes) L.push("· " + esc(n));
     }
+    if (extraNote) L.push("", extraNote);
     L.push("", "会被盯：链接状态" +
       (rec.appStoreId ? "、App Store 正式版号" : "") +
       (rec.departuresId ? "、departures.to 链接轮换" : "") +
