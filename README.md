@@ -69,6 +69,40 @@
 > 这一节是 [SETUP.md](SETUP.md) 的第 ② 步。**建 bot、拿 token、拿 chat_id、设 webhook**
 > 都在那份文档里；这里只讲控制台里点哪里。
 
+Cloudflare 有两条路，**任选一条**：
+
+| | 一键按钮（A-1） | 手工粘贴（A-2） |
+|---|---|---|
+| 要 GitHub 吗 | ✅ 要授权 Cloudflare GitHub App | ❌ **完全不用** |
+| 要装东西吗 | ❌ | ❌ |
+| 建 KV / 填密钥 | 自动弹出来问你 | 自己点几下 |
+| 什么时候选它 | 正常情况 | **按钮报 GitHub 授权错误时**（见下面排查） |
+
+---
+
+### A-1 一键按钮
+
+点 README 顶部的 **Deploy to Cloudflare** 按钮，它会：
+
+1. 让你授权 GitHub，然后 **fork 一份到你账号**并建 Worker 项目
+2. 读 `wrangler.toml` → **自动建 KV 并绑定**（变量名 `STATE`）
+3. 读 `.dev.vars.example` → **逐条弹出来问密钥**
+   （`TG_TOKEN`、`TG_CHAT_ID`、`TG_WEBHOOK_SECRET`、`ADMIN_KEY`）
+
+> ⚠️ 第一次部署时 `TG_CHAT_ID` 还不知道 —— **留空就行**，第 ③ 步拿到再补。
+> 但 `TG_TOKEN` 和 `ADMIN_KEY` **必须填**（拿 chat_id 要用 `ADMIN_KEY`）。
+
+⚠️ **如果它报红字 `Your GitHub authorization has expired`** —— 那是 Cloudflare 侧的 GitHub 授权过期，
+跟本项目无关。两个选择：
+
+- **修它**：打开 <https://github.com/settings/installations>，
+  找到 **Cloudflare Workers and Pages** 这个 App → `Configure` → 重新授权/重装，然后回到部署页重试。
+- **绕开它**：直接走下面的 **A-2 手工粘贴**，那条路完全不碰 GitHub。
+
+---
+
+### A-2 手工粘贴（不依赖 GitHub）
+
 **1. 建 KV 命名空间**
 控制台 → `Storage & Databases`（存储与数据库）→ `KV` → `Create namespace`，
 名字随便（如 `tfmon-state`）。
@@ -79,7 +113,7 @@
 **3. 粘贴代码**
 进 Worker → `Edit code`（编辑代码）→ 把本仓库 **`dist/worker.js` 全文**粘贴进去
 （覆盖编辑器里原有的示例代码）→ `Deploy`。
-> `dist/worker.js` 是自包含单文件（52KB，零 import），由 `build.mjs` 从 `src/` 拼出来。
+> `dist/worker.js` 是自包含单文件（约 70KB，零 import），由 `build.mjs` 从 `src/` 拼出来。
 > 我已经把它的入口测试跑过一遍 —— 不是"应该能跑"，是"跑过"。
 
 **4. 绑定 KV（变量名必须是 `STATE`）**
@@ -397,6 +431,11 @@ test/              116 项测试
 ---
 
 ## 排查
+
+**部署页报红字 `Your GitHub authorization has expired`**
+Cloudflare 的 GitHub 授权过期了，与本项目无关。要么去
+<https://github.com/settings/installations> 找到 **Cloudflare Workers and Pages** 重新授权，
+要么直接走 [A-2 手工粘贴](#a-2-手工粘贴不依赖-github)（不碰 GitHub）。
 
 **TG 里发命令没反应** → 九成是没设 webhook，或设错了地址。
 打开 `/` 或 `/health` 看 `webhook.url`；用 `/set-webhook?key=…` 重设。

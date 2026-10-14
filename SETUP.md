@@ -56,6 +56,10 @@
 
 ### A. Cloudflare（推荐，30 分钟一次）
 
+> 有两条路：**一键按钮**（要授权 Cloudflare 的 GitHub App）和
+> **手工粘贴**（不碰 GitHub）。按钮报 `Your GitHub authorization has expired` 时走手工那条，
+> 步骤见 README 的「A-2 手工粘贴」。
+
 1. 打开本仓库 README，点 **Deploy to Cloudflare** 按钮。
 2. 授权 GitHub —— 它会自动 fork 一份到你账号并建一个 Worker 项目。
 3. 它会读 `wrangler.toml`，**自动创建 KV 命名空间并绑定**（变量名 `STATE`），不用你手填 id。
@@ -66,7 +70,7 @@
    | `TG_TOKEN` | ✅ 第 ① 步拿到的 token |
    | `ADMIN_KEY` | ✅ **随便敲一串随机字符**（例如 `openssl rand -hex 24` 的输出）。拿 chat_id 要用它 |
    | `TG_WEBHOOK_SECRET` | 可留空（留空则 `ADMIN_KEY` 兼作 webhook 校验）；建议也填一串随机字符 |
-   | `TG_CHAT_ID` | ⬜ **先留空**，第 ③ 步拿到再补 |
+   | `TG_CHAT_ID` | ⬜ **先留空**，第 ③ 步拿到再补。此时还没拿到，别瞎填 |
 
 5. 部署完成后它会给你一个地址，形如 `https://tg-tf-monitor.<你的子域>.workers.dev`。
    打开它，应该能看到一个自检页，写着「部署顺序」和当前配置状态。
