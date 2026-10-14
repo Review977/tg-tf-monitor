@@ -1,0 +1,27 @@
+{
+  // 用 wrangler.jsonc 而不是 wrangler.toml —— 与 Cloudflare 全部官方模板保持一致
+  // （templates 里的 to-do-list-kv / agent-visibility / saas-admin 用的都是 jsonc）。
+  // wrangler 两种格式都支持，但"部署按钮"这条链路我无法本地复现，
+  // 所以不去赌它一定认 toml：跟官方模板对齐，少一个变量。
+  "name": "tg-tf-monitor",
+  "main": "src/worker.js",
+  "compatibility_date": "2026-10-01",
+  "observability": {
+    "enabled": true
+  },
+  // 两条 Cron：前者只监控，后者监控 + 全源发现。
+  // 第二条要和 src/config.js 里的 cron.discovery 一致 ——
+  // scheduled handler 靠比对 event.cron 决定跑哪个。
+  // 免费版每账户最多 5 条 Cron Trigger，这里用 2 条。
+  "triggers": {
+    "crons": ["*/30 * * * *", "0 */6 * * *"]
+  },
+  // 状态存储。部署按钮流程会自动创建并回写真实 id；
+  // 手动部署请换成 `wrangler kv namespace create STATE` 返回的 id。
+  "kv_namespaces": [
+    {
+      "binding": "STATE",
+      "id": "00000000000000000000000000000000"
+    }
+  ]
+}

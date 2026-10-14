@@ -21,7 +21,7 @@
 **Cloudflare（推荐，30 分钟一次）** —— 点上面的按钮，然后：
 
 1. 授权 GitHub，它会**自动 fork 一份到你账号**并创建一个 Worker 项目
-2. 它会读 `wrangler.toml`，**自动建好 KV 命名空间并绑定**（变量名 `STATE`），不用你手填 id
+2. 它会读 `wrangler.jsonc`，**自动建好 KV 命名空间并绑定**（变量名 `STATE`），不用你手填 id
 3. 它会读 `.dev.vars.example`，**逐条问你密钥**（`TG_TOKEN` 等，注释里写了怎么拿）
 4. 部署完成 → 打开 `https://<你的worker>.workers.dev/chat-id?key=<ADMIN_KEY>` 拿 chat_id
 5. 填回环境变量，再打开 `https://<你的worker>.workers.dev/set-webhook?key=<ADMIN_KEY>`
@@ -85,7 +85,7 @@ Cloudflare 有两条路，**任选一条**：
 点 README 顶部的 **Deploy to Cloudflare** 按钮，它会：
 
 1. 让你授权 GitHub，然后 **fork 一份到你账号**并建 Worker 项目
-2. 读 `wrangler.toml` → **自动建 KV 并绑定**（变量名 `STATE`）
+2. 读 `wrangler.jsonc` → **自动建 KV 并绑定**（变量名 `STATE`）
 3. 读 `.dev.vars.example` → **弹出来问密钥，只有两项**：`TG_TOKEN` 和 `ADMIN_KEY`
 
 > ⚠️ **为什么只有两项**：Cloudflare 会把 `.dev.vars.example` 里**每个未注释的项都当必填**，
@@ -95,7 +95,7 @@ Cloudflare 有两条路，**任选一条**：
 > - `TG_WEBHOOK_SECRET`：不设就回落到用 `ADMIN_KEY` 做 Webhook 来源校验，够用
 
 ⚠️ **如果它报红字** —— 下面两种都是 Cloudflare 侧的 GitHub 连接问题，跟本项目无关
-（仓库侧已核实：公开、匿名 `git clone` 成功、根目录有 `wrangler.toml`，满足官方文档全部前置要求）：
+（仓库侧已核实：公开、匿名 `git clone` 成功、根目录有 `wrangler.jsonc`，满足官方文档全部前置要求）：
 
 | 报错 | 含义 |
 |---|---|
@@ -469,10 +469,22 @@ test/              116 项测试
 ## 排查
 
 **部署页报红字 `无法获取存储库内容。` / `Your GitHub authorization has expired`**
-都是 Cloudflare 侧的 GitHub 连接问题。先去
-<https://github.com/settings/installations> 找到 **Cloudflare Workers and Pages**，
-在 `Configure` 里确认 **Repository access 包含 `tg-tf-monitor`**（新仓库很容易没被勾上）。
-还不行就走 [A-2 手工粘贴](#a-2-手工粘贴不依赖-github) —— 它不需要 Cloudflare 读你的仓库。
+都是 Cloudflare 侧的 Git 集成问题。按**官方文档的处置顺序**试：
+
+1. **先确认仓库访问权限**：<https://github.com/settings/installations> →
+   **Cloudflare Workers and Pages** → `Configure` → **Repository access**
+   确认包含 `tg-tf-monitor`（或选 `All repositories`）。
+2. **还不行就卸载重装**（这是 CF 官方文档对
+   [Git integration issues](https://developers.cloudflare.com/workers/ci-cd/builds/troubleshoot/)
+   给的标准处置）：
+   1. 同一个 `Configure` 页面 → `Uninstall "Cloudflare Workers and Pages"` → `Uninstall`
+   2. 回 <https://dash.cloudflare.com> → `Create application` → `Pages` → `Connect to Git`
+   3. 点 `+ Add account` → 选你的 GitHub 账号 → `Install & Authorize`
+   4. 回到部署页重试
+3. **顺带检查**：CF 文档明确写过 *A GitHub account should only point to one Cloudflare account* ——
+   如果你有多个 Cloudflare 账号都装过这个 App，先把不用的那个解除。
+4. **不想折腾就走 [A-2 手工粘贴](#a-2-手工粘贴不依赖-github)** ——
+   它完全不需要 Cloudflare 读你的仓库，是目前唯一**确定能成**的路。
 
 **怎么确认不是仓库的问题**（一条命令）：
 ```bash

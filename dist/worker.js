@@ -11,7 +11,7 @@
  * 用法：整个文件贴进 Cloudflare 控制台的 Worker 编辑器即可。
  * 该产物已被 test/handler.test.mjs 实际 import 并跑过断言。
  *
- * 源码指纹（sha256 前 16 位）：8a721ef11e2db6e6
+ * 源码指纹（sha256 前 16 位）：d1ebd469cf50cf5a
  * ⚠️ 这里刻意**不放构建时间** —— 放了构建就不可复现，
  *    CI 里"产物必须与源码同步"那条检查会永远失败（这是被 CI 抓出来的）。
  */
@@ -1535,7 +1535,7 @@ const KEY = "state";
 
 /** Cloudflare Workers KV */
 function kvStorage(kv) {
-  if (!kv) throw new Error("缺少 KV 绑定：请在 wrangler.toml / 控制台绑定 KV 命名空间到 STATE");
+  if (!kv) throw new Error("缺少 KV 绑定：请在 wrangler.jsonc / 控制台绑定 KV 命名空间到 STATE");
   return {
     kind: "cloudflare-kv",
     async load() {

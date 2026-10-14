@@ -16,7 +16,7 @@ const KEY = "state";
 
 /** Cloudflare Workers KV */
 export function kvStorage(kv) {
-  if (!kv) throw new Error("缺少 KV 绑定：请在 wrangler.toml / 控制台绑定 KV 命名空间到 STATE");
+  if (!kv) throw new Error("缺少 KV 绑定：请在 wrangler.jsonc / 控制台绑定 KV 命名空间到 STATE");
   return {
     kind: "cloudflare-kv",
     async load() {

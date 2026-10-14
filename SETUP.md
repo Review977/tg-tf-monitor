@@ -68,7 +68,7 @@
    > 先去 <https://github.com/settings/installations> 找到 **Cloudflare Workers and Pages**，
    > 在 `Configure` 里确认 **Repository access 包含 `tg-tf-monitor`**（新仓库很容易没被勾上）。
    > 还不行就走 README 的 **A-2 手工粘贴** —— 那条路不需要 Cloudflare 读你的仓库。
-3. 它会读 `wrangler.toml`，**自动创建 KV 命名空间并绑定**（变量名 `STATE`），不用你手填 id。
+3. 它会读 `wrangler.jsonc`，**自动创建 KV 命名空间并绑定**（变量名 `STATE`），不用你手填 id。
 4. 它会读 `.dev.vars.example`，**弹出来问你密钥 —— 只有两项**：
 
    | 变量 | 填什么 |
@@ -88,7 +88,7 @@
 5. 部署完成后它会给你一个地址，形如 `https://tg-tf-monitor.<你的子域>.workers.dev`。
    打开它，应该能看到一个自检页，写着「部署顺序」和当前配置状态。
 
-> Cron 已经在 `wrangler.toml` 里配好了（每 30 分钟监控 + 每 6 小时全源发现），不用你动。
+> Cron 已经在 `wrangler.jsonc` 里配好了（每 30 分钟监控 + 每 6 小时全源发现），不用你动。
 
 ### B. Vercel
 
