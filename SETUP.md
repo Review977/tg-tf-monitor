@@ -64,6 +64,10 @@
 2. 授权 GitHub —— 它会自动 fork 一份到你账号并建一个 Worker 项目。
 
    > ⚠️ 这一步可能报 `Your GitHub authorization has expired` 或 `无法获取存储库内容。`。
+   > **原因是 GitHub App 的用户令牌默认 8 小时过期**（GitHub 官方文档），
+   > 所以这条按钮路**本身就会时好时坏** —— 同一个按钮第一次能读到仓库、过一会儿就读不到，
+   > 跟你的仓库权限没关系（设成 All repositories 也不会改善）。
+   > 最省事：**再点一次按钮并在 GitHub 授权页确认**，拿到新令牌即可。
    > **先别卸载那个 GitHub App** —— 如果你账号里已经有别的 Worker 连着 Git
    > （比如某个反代 Worker），卸载会让它以后不再自动部署。
    >

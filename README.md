@@ -493,7 +493,37 @@ test/              116 项测试
 
 **部署页报红字 `无法获取存储库内容。` / `Your GitHub authorization has expired`**
 
-> 🛑 **先看这条，别急着卸载 App。**
+### 先理解为什么会「时好时坏」
+
+**GitHub App 的 user access token 默认 8 小时就过期**（GitHub 官方文档原文：
+*By default, the user access token expires after 8 hours*；`expires_in` 恒为 `28800` 秒）。
+
+这解释了一个很反直觉的现象：**同一个按钮，第一次点能读到仓库、过一会儿再点就读不到了。**
+因为：
+
+| 什么时候 | 用的是哪种令牌 | 会不会过期 |
+|---|---|---|
+| **已有的构建连接**（比如你那个反代 Worker 的自动部署） | GitHub App 的 installation token，CF 服务端自动续 | ❌ 不受影响 |
+| **用户发起的流程**（部署按钮、新连一个仓库） | GitHub App 的 **user** token（`ghu_…`） | ✅ **8 小时过期** |
+
+所以：
+
+- 你账号上的 Git 集成「是好的」（反代 Worker 照常部署）**和**「部署按钮读不到仓库」**并不矛盾** —— 两者用的不是同一种令牌。
+- **「Repository access 设成 All repositories」不会有帮助** —— 仓库权限从来不是变量，令牌才是。
+- 这条路**本身就会时不时失灵**，不是你的配置问题。
+
+### 那怎么办
+
+最省事的顺序：
+
+0. **直接再点一次按钮，并在弹出的 GitHub 授权页上点确认** ——
+   用户令牌过期后，重新走一遍授权就能拿到新的。这一步最便宜，先试它。
+1. 走 [A-2 导入仓库](#a-2-导入仓库用你账号已有的-git-集成推荐)。
+2. 走 [A-3 手工粘贴](#a-3-手工粘贴不依赖-github也不依赖任何-git-集成) ——
+   **它完全不碰 GitHub，所以不受令牌过期影响，一次配好就永久有效。**
+   只部署一次的机器人，这条其实最省心（代价是以后改了要重新粘一次）。
+
+> 🛑 **别急着卸载 App。**
 > 官方文档写明：*removing access to GitHub will **disable new builds** for Workers and Pages
 > projects that were connected to those repositories, though your previous deployments
 > will continue to be hosted*。
