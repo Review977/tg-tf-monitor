@@ -527,15 +527,32 @@ test/              116 项测试
 > 就会是这个状态。反代这类 Worker 的自动部署走**安装**侧的服务端令牌，
 > 所以它一直正常；而部署按钮、新连仓库这类**用户发起**的流程走**授权**侧，就点不动。
 
-#### 情况「有安装、没授权」的修法：去 CF 补一次授权
+#### 情况「有安装、没授权」的修法
 
-1. Cloudflare 控制台 → `Workers & Pages` → `Create application`
-2. 找到 **`Import a repository`** → `Get started`
-3. `Git account` 那里点 **`+ Add account`** → 选你的 GitHub 账号 → **`Install & Authorize`**
-4. 回部署页重试
+这是最容易被误判的一种：**`Installed` 里有 Cloudflare，`Authorized` 里没有。**
+含义是 CF 能读你的仓库（靠安装），但**不能代你行事**（缺授权）——
+所以已有 Worker 的构建正常，而**部署按钮、新连仓库这类用户流程全用不了**。
 
-> 这一步补上用户授权、复用已有安装，**不会卸载任何东西**，
-> 已有 Worker 的自动部署不受影响。
+**按顺序试：**
+
+1. **让 CF 重新发起一次授权**（不卸载，最优先）：
+   Cloudflare 控制台 → `Workers & Pages` → `Create application` →
+   找到 **`Import a repository`** → `Get started` →
+   `Git account` 那里点 **`+ Add account`** → 选你的 GitHub 账号 → **`Install & Authorize`**
+   > 这一步就是产生"授权"那半边的动作（CF 官方文档里的原文就是
+   > *Select the `+ Add account` button… then select `Install & Authorize`*）。
+   > 补上授权、复用已有安装，**不会卸载任何东西**。
+
+2. **如果它不让你重新授权**（账号已在列表里、没有 `+ Add account` 或点了没反应）——
+   说明 CF 认为自己已经有连接，只是那条记录坏了。这时**别硬试**，直接走
+   [A-3 手工粘贴](#a-3-手工粘贴不依赖-github也不依赖任何-git-集成)：
+   它完全不碰 GitHub 授权，**不受这类问题影响**。
+
+3. **只有在你能接受"已有 Worker 暂时失去自动部署"时**，才考虑 CF 官方那套
+   完整卸载重装（重装后把仓库重新授权给那些项目即可恢复）。
+
+> 💡 **判断依据**：如果你已经为这个按钮折腾了好几轮，**A-3 手工粘贴是更划算的选择** ——
+> 8 次点击、不依赖任何 GitHub 授权、一次配好永久有效。这个机器人你只需要部署一次。
 
 ### 情况「有安装、也有授权」的修法：只撤销「授权」，别动「安装」
 
