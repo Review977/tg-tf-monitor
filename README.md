@@ -176,6 +176,14 @@ Worker → `Settings` → `Variables and Secrets`，加这几个（建议都选�
 | `ADMIN_KEY` | ✅ 部署时必须 | 随机长串。保护 `/run` `/set-webhook` `/chat-id` `/set-commands`，并兼作 Webhook 来源校验 |
 | `TG_CHAT_ID` | ⬜ **部署后再加** | 目标会话 id（拿法见下）。部署时还不知道，所以不在部署表单里 |
 | `TG_WEBHOOK_SECRET` | ⬜ 可选 | 想给 Webhook 单独一把密钥再设；不设则用 `ADMIN_KEY` |
+| `TIMEZONE` | ⬜ 可选 | 消息里时间的时区，默认 `Asia/Shanghai`。见下 |
+
+> ⏰ **时间显示**：serverless 没有"本地时间" —— Worker 跑在 Cloudflare 边缘节点上，
+> `Date` 默认就是 **UTC**，不配就会显示成差 8 小时的时间。
+> 所以默认配了 `Asia/Shanghai`；要改就设 `TIMEZONE`（IANA 名，能处理夏令时），
+> 或者 `UTC_OFFSET_MINUTES`（固定偏移，如 `480`）。
+> `Intl` 时区数据不可用时会**自动退回固定偏移**，宁可少一点夏令时支持，也不会把时间显示错。
+> `/status` 抬头会标明当前用的时区。
 
 随机串生成：随便敲一长串，或本地跑 `openssl rand -hex 24`。
 

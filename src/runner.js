@@ -11,6 +11,7 @@
 
 import {
   makeNotifier, runMonitor, runDiscovery, handleCommand, tgCall, tgPrepare,
+  setDisplayTimeZone,
 } from "./core.js";
 import { loadConfig, checkConfig } from "./config.js";
 import { pickStorage } from "./storage.js";
@@ -45,6 +46,8 @@ export async function doRun(env = {}, opts = {}) {
   const fetchImpl = opts.fetchImpl;
   const cfg = loadConfig(env);
   if (cfg.telegram && isPlaceholder(cfg.telegram.chatId)) cfg.telegram.chatId = "";
+  // 时区要在任何 nowStr() 之前设定 —— Worker 里 Date 默认是 UTC
+  setDisplayTimeZone(cfg.timezone, cfg.utcOffsetMinutes);
 
   // DRY_RUN 时不强制要 token：很多人的用法是"先验证监控能不能跑通，再去配 bot"。
   // 真部署（非 DRY_RUN）时缺 token 必须报错 —— 否则会静默变成"什么都不发"。
@@ -79,6 +82,7 @@ export async function handleUpdate(env = {}, update, opts = {}) {
   try {
     const cfg = loadConfig(env);
     if (cfg.telegram && isPlaceholder(cfg.telegram.chatId)) cfg.telegram.chatId = "";
+    setDisplayTimeZone(cfg.timezone, cfg.utcOffsetMinutes);
     const msg = update.message || update.channel_post || update.edited_message;
     if (!msg) return { ok: true, skipped: "无 message 字段" };
     const text = msg.text || "";

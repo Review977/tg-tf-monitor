@@ -365,6 +365,54 @@ test("/status：显示公测页测试说明（有些开发者会把版本号写�
   assert.match(out, /公测页测试说明：v1\.2\.3/, "开发者写在说明里的版本号要被展示出来");
 });
 
+// ───────────────────── 时间显示（不能用 UTC）─────────────────────
+
+test("nowStr：默认按配置的时区显示，不带 UTC 字样", async () => {
+  const { nowStr, setDisplayTimeZone, tzLabel } = await import("../src/core.js");
+  const d = new Date("2026-10-14T08:24:00Z");
+
+  setDisplayTimeZone("Asia/Shanghai", 480);
+  assert.equal(nowStr(d), "2026-10-14 16:24", "UTC+8 应显示 16:24");
+  assert.ok(!/UTC/.test(nowStr(d)), "消息里不该出现 UTC");
+  assert.match(tzLabel(), /Asia\/Shanghai/);
+  assert.match(tzLabel(), /UTC\+8/);
+});
+
+test("nowStr：时区名不可用时自动退回固定偏移（而不是显示错时间）", async () => {
+  const { nowStr, setDisplayTimeZone } = await import("../src/core.js");
+  const d = new Date("2026-10-14T08:24:00Z");
+
+  setDisplayTimeZone("Bogus/Nowhere", 480);
+  assert.equal(nowStr(d), "2026-10-14 16:24", "坏时区名必须退回偏移，仍要显示对");
+
+  setDisplayTimeZone("", 0);
+  assert.equal(nowStr(d), "2026-10-14 08:24", "偏移 0 时应等于 UTC 时间（但不出 UTC 字样）");
+
+  setDisplayTimeZone("Asia/Shanghai", -300);  // 名字可用时以名字为准
+  assert.equal(nowStr(d), "2026-10-14 16:24");
+
+  setDisplayTimeZone("", 330);
+  assert.equal(nowStr(d), "2026-10-14 13:54", "半点偏移也要正确（印度 +5:30）");
+  setDisplayTimeZone("Asia/Shanghai", 480);   // 还原，免得影响其它用例
+});
+
+test("tzLabel：能正确表达正负与半小时偏移", async () => {
+  const { tzLabel, setDisplayTimeZone } = await import("../src/core.js");
+  setDisplayTimeZone("", 480);   assert.equal(tzLabel(), "UTC+8");
+  setDisplayTimeZone("", -300);  assert.equal(tzLabel(), "UTC-5");
+  setDisplayTimeZone("", 330);   assert.equal(tzLabel(), "UTC+5:30");
+  setDisplayTimeZone("", 0);     assert.equal(tzLabel(), "UTC+0");
+  setDisplayTimeZone("Asia/Shanghai", 480);
+});
+
+test("/status 抬头标注了时区（不然用户不知道看到的是哪个时区）", async () => {
+  const { renderStatus, normalizeState, setDisplayTimeZone } = await import("../src/core.js");
+  setDisplayTimeZone("Asia/Shanghai", 480);
+  const out = renderStatus({}, normalizeState({ links: { abcdef: { label: "A", state: "open" } } }));
+  assert.match(out, /时间均为/);
+  assert.match(out, /Asia\/Shanghai/);
+});
+
 // ───────────────────── 发送前的消息安全仍然成立 ─────────────────────
 
 test("新增的 /apps、/find 输出都能过 Telegram 的 HTML 校验", async () => {

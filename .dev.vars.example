@@ -26,5 +26,12 @@ ADMIN_KEY=
 # 想给 Webhook 单独一把密钥（与 ADMIN_KEY 分开）时再设；不设就用 ADMIN_KEY。
 # TG_WEBHOOK_SECRET=
 
+# 显示时区。默认 Asia/Shanghai（UTC+8），一般不用动。
+# ⚠️ serverless 没有"本地时间"：Worker 跑在边缘节点上、Date 默认是 UTC，
+#    所以时区必须显式配 —— 不配就会显示成 UTC 时间。
+#    改时区时优先用 IANA 名（能处理夏令时）；它不可用时会自动退回 UTC_OFFSET_MINUTES。
+# TIMEZONE=Asia/Shanghai
+# UTC_OFFSET_MINUTES=480
+
 # 覆盖监控对象 / 发现源，整段 JSON，见 src/config.js 的 DEFAULT_CONFIG。
 # CONFIG_JSON=

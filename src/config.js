@@ -16,6 +16,11 @@ export const DEFAULT_CONFIG = {
   // 监控间隔只用于"文档说明"；真正的频率由平台的 Cron 决定
   intervalMinutes: 30,
 
+  // 显示时区。⚠️ serverless 没有"本地时间"：Worker 跑在边缘节点上，Date 默认是 UTC。
+  // timezone 走 Intl（能处理夏令时）；它不可用/数据缺失时自动退回 utcOffsetMinutes。
+  timezone: "Asia/Shanghai",
+  utcOffsetMinutes: 480,
+
   autoWatchDiscovered: true,
 
   // 哪些发现值得推送
@@ -77,6 +82,13 @@ export function loadConfig(env = {}) {
   if (env.TG_TOKEN) cfg.telegram.token = String(env.TG_TOKEN);
   if (env.TG_CHAT_ID) cfg.telegram.chatId = String(env.TG_CHAT_ID);
   if (env.TG_API_BASE) cfg.telegram.apiBase = String(env.TG_API_BASE);
+
+  // 显示时区（可选；默认已在 DEFAULT_CONFIG 里给了 Asia/Shanghai）
+  if (env.TIMEZONE) cfg.timezone = String(env.TIMEZONE);
+  if (env.UTC_OFFSET_MINUTES !== undefined && String(env.UTC_OFFSET_MINUTES) !== "") {
+    const n = Number(env.UTC_OFFSET_MINUTES);
+    if (Number.isFinite(n)) cfg.utcOffsetMinutes = n;
+  }
 
   return cfg;
 }

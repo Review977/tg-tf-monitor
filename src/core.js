@@ -830,10 +830,71 @@ export function daysAgo(isoDate, now = new Date()) {
   return days < 0 ? 0 : days;
 }
 
-export function nowStr(d = new Date()) {
+/**
+ * 显示用时间。
+ *
+ * ⚠️ serverless 里没有"本地时间"这个概念 —— Cloudflare Workers 跑在边缘节点上，
+ * `Date` 默认就是 UTC，直接输出会带着 8 小时偏差。所以时区要**显式配置**。
+ *
+ * 两条路，优先前者：
+ *   1. IANA 时区名（`Asia/Shanghai`）—— 走 `Intl.DateTimeFormat`，能正确处理夏令时
+ *   2. 固定偏移（`utcOffsetMinutes: 480`）—— `Intl` 不可用或时区数据缺失时的兜底
+ *
+ * 为什么不只用 IANA：Worker 的 `Intl` 虽然存在，但**时区/区域数据是否完整并不保证**；
+ * 而且不同运行时的默认 locale 会让输出格式漂移。所以下面会**校验输出格式**，
+ * 不符合预期就自动退回固定偏移 —— 宁可少一点夏令时支持，也不能把时间显示错。
+ */
+let DISPLAY_TZ = { name: "", offsetMinutes: 0 };
+
+export function setDisplayTimeZone(name, offsetMinutes) {
+  const n = String(name == null ? "" : name).trim();
+  const off = Number(offsetMinutes);
+  DISPLAY_TZ = {
+    name: n && n.toUpperCase() !== "UTC" ? n : "",
+    offsetMinutes: Number.isFinite(off) ? off : 0,
+  };
+  return { ...DISPLAY_TZ };
+}
+
+export function getDisplayTimeZone() {
+  return { ...DISPLAY_TZ };
+}
+
+/** 形如 "2026-10-14 16:24"；不满足这个形状的输出一律不采用 */
+const TS_SHAPE = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/;
+
+function formatWithOffset(d, offsetMinutes) {
+  const t = new Date(d.getTime() + offsetMinutes * 60000);
   const p = (n) => String(n).padStart(2, "0");
-  return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())} ` +
-    `${p(d.getUTCHours())}:${p(d.getUTCMinutes())} UTC`;
+  return `${t.getUTCFullYear()}-${p(t.getUTCMonth() + 1)}-${p(t.getUTCDate())} ` +
+    `${p(t.getUTCHours())}:${p(t.getUTCMinutes())}`;
+}
+
+export function nowStr(d = new Date()) {
+  if (DISPLAY_TZ.name) {
+    try {
+      // sv-SE 的日期格式恰好是 "YYYY-MM-DD HH:mm"，拿来当 ISO 风格输出最省事
+      const out = new Intl.DateTimeFormat("sv-SE", {
+        timeZone: DISPLAY_TZ.name,
+        year: "numeric", month: "2-digit", day: "2-digit",
+        hour: "2-digit", minute: "2-digit", hour12: false,
+      }).format(d);
+      if (TS_SHAPE.test(out)) return out;
+    } catch {
+      /* 时区名不被支持 / Intl 数据缺失 -> 退回固定偏移 */
+    }
+  }
+  return formatWithOffset(d, DISPLAY_TZ.offsetMinutes);
+}
+
+/** 时区的人类可读标签，给 /status 抬头用 */
+export function tzLabel() {
+  const { name, offsetMinutes } = DISPLAY_TZ;
+  const sign = offsetMinutes >= 0 ? "+" : "-";
+  const abs = Math.abs(offsetMinutes);
+  const hh = Math.floor(abs / 60), mm = abs % 60;
+  const off = `UTC${sign}${hh}${mm ? ":" + String(mm).padStart(2, "0") : ""}`;
+  return name ? `${name}（${off}）` : off;
 }
 
 // ─────────────────────────── Telegram 调用 ───────────────────────────
@@ -1224,6 +1285,7 @@ export async function runDiscovery({ cfg, state, notifier, log = () => {}, fetch
 
 export function renderStatus(cfg, state) {
   const L = ["<b>tg-tf-monitor 当前状态</b>",
+    `<i>时间均为 ${esc(tzLabel())}</i>`,
     `上次监控：${esc(state.meta.lastCheck || "从未")}`,
     `上次发现扫描：${esc(state.meta.lastScan || "从未")}`, ""];
   const codes = Object.keys(state.links || {});
