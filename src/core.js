@@ -79,6 +79,10 @@ export function cleanAppName(s) {
   t = t.replace(/^查看\s*[“"]?/, "");
   t = t.replace(/[”"']?\s*Beta\s*版?\s*$/i, "");
   t = t.replace(/\s*[”"']\s*$/, "");
+  // departures.to 的页面标题形如「番茄小说 TestFlight Beta — Departures」，
+  // 直接拿来当名字很难看 —— 把这两个壳一起剥掉。
+  t = t.replace(/\s*[—–-]\s*Departures\s*$/i, "");
+  t = t.replace(/\s+TestFlight(\s+Beta)?\s*$/i, "");
   return t.trim();
 }
 
@@ -408,7 +412,7 @@ export async function probeDepartures(appId, opts = {}) {
     return out;
   }
   const tm = /<title>([\s\S]*?)<\/title>/i.exec(text);
-  if (tm) out.appName = unescapeEntities(tm[1]).replace(/\s+/g, " ").trim();
+  if (tm) out.appName = cleanAppName(tm[1]);
 
   const re = /wire:snapshot="([^"]+)"/g;
   let m;
@@ -818,6 +822,42 @@ export function groupByName(items, nameOf) {
  *      -> "它没走公开 TestFlight 分发"（实测：搜「微信」就是这个情况）
  *   2. 连 App Store 都没有正好同名的 -> 说明搜索是**子串匹配**，别以为漏了
  */
+/**
+ * 从 `/add` 的参数里认出"departures app id"。
+ * 支持 `dep=21038` / `departures=21038` / `https://departures.to/apps/21038`。
+ * 为什么要这个：departures 的 app 页里**带着 join 链接**，所以给 id 就能反解出码 ——
+ * 用户看到"app id 21038"时应该能直接加，而不是被迫先去别处找码。
+ */
+export function parseDeparturesArg(s) {
+  const t = String(s == null ? "" : s).trim();
+  if (!t) return "";
+  let m = /^dep(?:artures)?[=:]([A-Za-z0-9]+)$/i.exec(t);
+  if (m) return m[1];
+  m = /departures\.to\/apps\/([A-Za-z0-9]+)/i.exec(t);
+  if (m) return m[1];
+  return "";
+}
+
+/**
+ * 把 tfstore 的码和 departures 反解出来的码**按码合并**。
+ * 同一份链接经常两边都有（实测：微信读书的 7Jg9MM8h 在两边都是它），
+ * 不合并就会重复展示、看着像两个不同的东西。
+ */
+export function mergeFindResults(tfs = [], depResolved = []) {
+  const byCode = new Map();
+  const put = (code, appName, departuresId) => {
+    const c = String(code || "").trim();
+    if (!c) return;
+    const cur = byCode.get(c) || { code: c, appName: "", departuresId: "" };
+    if (!cur.appName && appName) cur.appName = String(appName).trim();
+    if (!cur.departuresId && departuresId) cur.departuresId = String(departuresId);
+    byCode.set(c, cur);
+  };
+  for (const t of tfs || []) put(t.code, t.appName, "");
+  for (const d of depResolved || []) put(d.code, d.appName, d.appId);
+  return [...byCode.values()];
+}
+
 export function findHints({ term, itunes = [], tfs = [], deps = [] }) {
   const t = String(term || "").trim();
   if (!t) return [];
@@ -869,38 +909,52 @@ export async function findApp({ state, query, fetchImpl, log = () => {} }) {
     L.push("", "App Store：没搜到");
   }
 
-  // ── 同一 App 常有多条记录，先分组再展示，免得看起来"怎么这么多" ──
-  const tfsGroups = groupByName(tfs, (t) => t.appName);
-  if (tfsGroups.length) {
-    L.push("", "<b>tfstore 上有 TestFlight 的</b>");
-    for (const g of tfsGroups.slice(0, 5)) {
-      const codes = g.items.map((t) => t.code);
-      const marks = g.items.map((t) => (watched.has(t.code) ? "（已在监控）" : ""));
-      L.push(`· ${esc(g.name)}${marks.some(Boolean) ? " " + marks.filter(Boolean).join(" ") : ""}` +
-        (codes.length > 1 ? ` — ${codes.length} 个码` : ""));
-      L.push("  " + codes.map((c) => `<code>/add ${esc(c)}</code>`).join("　"));
+  // departures 的 app 页里带着 join 链接 —— 反解出码，才能给出"能直接点"的命令。
+  // 并行请求，别串行等。失败的条目就只留 id（不因此整体失败）。
+  const depResolved = (await Promise.all(deps.slice(0, 6).map(async (d) => {
+    try {
+      const r = await probeDepartures(d.appId, { fetchImpl });
+      return r && r.code ? { code: r.code, appName: r.appName || d.name, appId: d.appId } : null;
+    } catch {
+      return null;
+    }
+  }))).filter(Boolean);
+
+  // 按码合并两个来源（同一份链接常常两边都有）
+  const merged = mergeFindResults(tfs, depResolved);
+  // 补状态：这才是用户最想知道的"哪个能进" —— 否则他得一个个试
+  const withStatus = await Promise.all(merged.slice(0, 8).map(async (m) => {
+    try {
+      const j = await probeJoin(m.code, { fetchImpl });
+      return { ...m, state: j.state };
+    } catch {
+      return { ...m, state: "" };
+    }
+  }));
+
+  if (withStatus.length) {
+    L.push("", "<b>找到的 TestFlight 链接</b>");
+    for (const g of groupByName(withStatus, (x) => x.appName).slice(0, 5)) {
+      L.push(`· ${esc(g.name)}${g.items.length > 1 ? ` — ${g.items.length} 个码` : ""}`);
+      for (const it of g.items) {
+        const bits = [];
+        if (it.state) bits.push(STATE_LABEL[it.state] || it.state);
+        if (it.departuresId) bits.push(`departures ${it.departuresId}`);
+        if (watched.has(it.code)) bits.push("已在监控");
+        L.push(`  <code>/add ${esc(it.code)}</code>${bits.length ? " — " + esc(bits.join(" · ")) : ""}`);
+      }
     }
   } else {
     L.push("", "tfstore：没有（它只收录一部分 App，不代表没有 TF 版）");
   }
+  if (dp.error) L.push("", `departures.to：查询失败（${esc(dp.error)}）`);
+  else if (!deps.length) L.push("", "departures.to：没收录（不影响状态监控，只是少一层轮换检测）");
 
-  const depGroups = groupByName(deps, (d) => d.name);
-  if (depGroups.length) {
-    L.push("", "<b>departures.to 收录的</b>（有它就能自动盯链接轮换）");
-    for (const g of depGroups.slice(0, 5)) {
-      const ids = g.items.map((d) => d.appId);
-      L.push(`· ${esc(g.name)} — app id ${ids.map((i) => "<code>" + esc(i) + "</code>").join("、")}`);
-    }
-  } else {
-    L.push("", dp.error
-      ? `departures.to：查询失败（${esc(dp.error)}）`
-      : "departures.to：没收录（不影响状态监控，只是少一层轮换检测）");
-  }
-
-  for (const note of findHints({ term, itunes, tfs, deps })) L.push("", `<i>${note}</i>`);
+  for (const note of findHints({ term, itunes, tfs: withStatus, deps })) L.push("", `<i>${note}</i>`);
 
   L.push("", "<b>怎么加</b>",
     "· 点上面的 <code>/add &lt;码&gt;</code> 直接加（App Store id 与 departures id 会自动补齐）",
+    "· 只有 departures 的 app id → <code>/add dep=&lt;id&gt;</code>（会自动反解出 TF 码）",
     "· 要手动指定 → <code>/add &lt;链接&gt; 名称 appstore=&lt;id&gt; departures=&lt;id&gt;</code>");
   return L.join("\n");
 }
@@ -1690,18 +1744,38 @@ export async function handleCommand({ cfg, state, notifier, text, chatId, log = 
   } else if (cmd === "/add") {
     if (parts.length < 2) {
       await notifier.send("用法：<code>/add &lt;TestFlight链接或join码&gt; [名称] [appstore=&lt;id&gt;] [departures=&lt;id&gt;]</code>\n" +
+        "也可以用 departures 的 app id：<code>/add dep=&lt;id&gt;</code>（会自动反解出 TF 码）\n" +
         "不知道链接？先发 <code>/find &lt;App名字&gt;</code>");
       return;
     }
-    const arg = parts[1].trim();
-    const code = firstJoinCode(arg) || arg;
-    if (!JOIN_CODE_RE.test(code)) {
-      await notifier.send(
-        `这看着不是 TestFlight join 码：${esc(arg)}\n` +
-        `· 想按名字找 → <code>/find ${esc(arg.slice(0, 30))}</code>\n` +
-        `· join 码长这样：<code>dTUO1uyt</code>（6-14 位字母数字）`
-      );
-      return;
+    let arg = parts[1].trim();
+    let depId = parseDeparturesArg(arg);
+    let code = "";
+    if (depId) {
+      // /add dep=<id>：departures 的 app 页里带着 join 链接，直接反解，省得用户先去别处找码
+      await notifier.send(`正在从 departures.to 反解 <code>${esc(depId)}</code> 的 TestFlight 码…`);
+      const d = await probeDepartures(depId, { fetchImpl });
+      if (d.error || !d.code) {
+        await notifier.send(
+          `没能反解出码（${esc(d.error || "该页面里没有 join 链接")}）\n` +
+          `· 自己看一眼：<code>https://departures.to/apps/${esc(depId)}</code>\n` +
+          `· 或者直接 <code>/add &lt;TestFlight链接&gt;</code>`
+        );
+        return;
+      }
+      code = d.code;
+      arg = d.code;
+    } else {
+      code = firstJoinCode(arg) || arg;
+      if (!JOIN_CODE_RE.test(code)) {
+        await notifier.send(
+          `这看着不是 TestFlight join 码：${esc(arg)}\n` +
+          `· 想按名字找 → <code>/find ${esc(arg.slice(0, 30))}</code>\n` +
+          `· join 码长这样：<code>dTUO1uyt</code>（6-14 位字母数字）\n` +
+          `· 只有 departures 的 app id → <code>/add dep=&lt;id&gt;</code>`
+        );
+        return;
+      }
     }
 
     // 名称与可选的手动指定：/add <码> 名称 appstore=123 departures=456
@@ -1713,6 +1787,8 @@ export async function handleCommand({ cfg, state, notifier, text, chatId, log = 
       else nameParts.push(t);
     }
     const givenName = nameParts.join(" ").trim();
+    // 反解出来的 departures id 直接绑上（用户显式给了 departures= 就以他的为准）
+    if (depId && !opts.departures) opts.departures = depId;
 
     await notifier.send(`正在补齐 <code>${esc(code)}</code> 的信息（探测链接 + 查 App Store + 查 departures.to）…`);
 

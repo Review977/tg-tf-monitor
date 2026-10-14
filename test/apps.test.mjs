@@ -273,11 +273,47 @@ test("/find：三路结果都列出来，并给可直接复制的 /add", async (
   const out = await findApp({ state, query: "番茄", fetchImpl: f });
   assert.match(out, /App Store/);
   assert.match(out, /1468454200/);
-  assert.match(out, /tfstore/);
+  // 现在把 tfstore 与 departures 的码**按码合并**成一段，并补上状态（哪个能进）
+  assert.match(out, /找到的 TestFlight 链接/);
   assert.match(out, /CNeMrOox/);
   assert.match(out, /\/add CNeMrOox/, "要给出可直接复制的命令");
-  assert.match(out, /departures\.to/);
-  assert.match(out, /16645/);
+  assert.match(out, /16645/, "departures id 要带出来");
+  assert.match(out, /可加入|已满员|已关闭|链接失效/, "要显示状态，否则用户得一个个试");
+  assert.match(out, /\/add dep=&lt;id&gt;|\/add dep=<id>/, "要告诉用户只有 departures id 时怎么加");
+});
+
+test("parseDeparturesArg：三种写法都认，别误吃普通码", async () => {
+  const { parseDeparturesArg } = await import("../src/core.js");
+  assert.equal(parseDeparturesArg("dep=21038"), "21038");
+  assert.equal(parseDeparturesArg("departures=21038"), "21038");
+  assert.equal(parseDeparturesArg("https://departures.to/apps/21038"), "21038");
+  assert.equal(parseDeparturesArg("DEP=21038"), "21038");
+  // 不该误认的
+  for (const bad of ["dTUO1uyt", "https://testflight.apple.com/join/dTUO1uyt", "21038", "", null]) {
+    assert.equal(parseDeparturesArg(bad), "", `${JSON.stringify(bad)} 不该被当成 departures 参数`);
+  }
+});
+
+test("mergeFindResults：同一份链接两边都有时只留一条（但把 departures id 带上）", async () => {
+  const { mergeFindResults } = await import("../src/core.js");
+  const m = mergeFindResults(
+    [{ code: "7Jg9MM8h", appName: "微信读书" }, { code: "only-tf", appName: "只在 tfstore" }],
+    [{ code: "7Jg9MM8h", appName: "微信读书 TestFlight Beta — Departures", appId: 21038 },
+     { code: "only-dep", appName: "只在 departures", appId: 999 }]
+  );
+  assert.equal(m.length, 3, "重复的码要合并");
+  const dupe = m.find((x) => x.code === "7Jg9MM8h");
+  assert.equal(dupe.departuresId, "21038", "合并时要保住 departures id");
+  assert.equal(dupe.appName, "微信读书", "已有名字就用已有的（tfstore 的更干净）");
+  assert.ok(m.find((x) => x.code === "only-dep").departuresId === "999");
+});
+
+test("cleanAppName：要剥掉 departures 的标题壳（番茄小说 TestFlight Beta — Departures）", async () => {
+  const { cleanAppName } = await import("../src/core.js");
+  assert.equal(cleanAppName("番茄小说 TestFlight Beta — Departures"), "番茄小说");
+  assert.equal(cleanAppName("微信读书 - Departures"), "微信读书");
+  assert.equal(cleanAppName("微信输入法 TestFlight"), "微信输入法");
+  assert.equal(cleanAppName("番茄小说"), "番茄小说", "正常名字不能被动");
 });
 
 test("/find：已在监控的会标出来", async () => {
