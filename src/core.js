@@ -168,7 +168,14 @@ export function parseJoinPage(html, httpStatus, errorMsg = "") {
   // app 名兜底：og:title
   if (!out.appName) {
     const om = /<meta property="og:title" content="([\s\S]*?)"/i.exec(text);
-    if (om) out.appName = cleanAppName(om[1]);
+    // ⚠️ 已关闭的页面用的是通用标题「TestFlight - Apple」——
+    // 拿它当应用名会连累一串：用户给的名字不参与 iTunes 匹配（绑不上 App Store id）、
+    // 关键词被污染成 TestFlight/Apple（而搜索结果里必然含 "testflight.apple.com/join"，
+    // 于是 relevant() 对所有结果放行，无关的码全被当"新发现"推给用户）。
+    if (om) {
+      const t = cleanAppName(om[1]);
+      if (t && !GENERIC_TITLE_RE.test(t)) out.appName = t;
+    }
   }
 
   // ── 状态句：只在 beta-status 附近的有界切片上找（省 CPU）──
@@ -1416,6 +1423,7 @@ export function normalizeState(s) {
   d.discoveries = d.discoveries || {};
   d.appstore = d.appstore || {};
   d.meta = d.meta || {};
+  d.removed = d.removed || {};      // /del 的墓碑，见 monitorTargets
   return d;
 }
 
@@ -1425,8 +1433,11 @@ export function knownCodes(cfg) {
 
 export function monitorTargets(cfg, state) {
   const out = {};
+  // "墓碑"：用户 /del 过的码。没有它的话，配置 watch 里的码删了下一轮又会被加回来 ——
+  // 用户收到"已移出监控"，半小时后它自己回来了（实测复现过）。
+  const removed = (state && state.removed) || {};
   for (const w of cfg.watch || []) {
-    if (w && w.code) {
+    if (w && w.code && !removed[w.code]) {
       // fromConfig 用来如实标注来源 —— 配置带进来的条目以前被写成 "manual"，
       // 那是**不实**的：用户根本没手动加过它。
       out[w.code] = { label: w.label || w.code, appStoreId: w.appStoreId,
@@ -1434,7 +1445,7 @@ export function monitorTargets(cfg, state) {
     }
   }
   for (const [code, rec] of Object.entries(state.links || {})) {
-    if (!out[code]) {
+    if (!out[code] && !removed[code]) {
       out[code] = { label: rec.label || code, appStoreId: rec.appStoreId, departuresId: rec.departuresId };
     }
   }
@@ -1478,9 +1489,15 @@ export async function runMonitor({ cfg, state, notifier, log = () => {}, fetchIm
     const info = await probeJoin(code, { fetchImpl });
     const oldState = rec.state;
     const oldDesc = rec.desc;
+    const oldDescHash = rec.descHash;
     Object.assign(rec, {
       state: info.state, stateBasis: info.stateBasis, http: info.http, title: info.title,
-      appName: info.appName || rec.appName || "", desc: info.desc, descHash: info.descHash,
+      appName: info.appName || rec.appName || "",
+      // ⚠️ 抓取失败时 info.desc 是空串 —— 不能拿它覆盖已存的好值。
+      // 否则一次 429/超时就把 desc 清空，之后 oldDesc 恒为空，
+      // "页面文案有变化"这条告警对**下一次真正的变化**永久漏报。
+      desc: info.error ? rec.desc : info.desc,
+      descHash: info.error ? rec.descHash : info.descHash,
       head: info.head, statusText: info.statusText, lastChecked: info.checkedAt,
     });
     if (info.error) rec.lastError = info.error;
@@ -1493,6 +1510,7 @@ export async function runMonitor({ cfg, state, notifier, log = () => {}, fetchIm
     const muted = !!rec.joined;
 
     if (oldState !== info.state) {
+      const oldSince = rec.stateSince;
       rec.stateSince = nowStamp();
       if (!muted && (oldState !== undefined || info.state !== "open")) {
         const msg = [
@@ -1513,7 +1531,15 @@ export async function runMonitor({ cfg, state, notifier, log = () => {}, fetchIm
           msg.push("", "💡 名额用完/链接失效时，开发者通常会另开一个公测链接。发 /scan 让我去各发现源找找有没有新 join 码。");
         }
         msg.push(`时间：${nowStr()}`);
-        if (await notifier.send(msg.join("\n"))) events++;
+        if (await notifier.send(msg.join("\n"))) {
+          events++;
+        } else {
+          // ⚠️ 发送失败（Telegram 429/5xx/网络抖动）时**把状态回退**：
+          // 否则下一轮 oldState 已等于新状态，这次变化再也不会被报 —— 告警永久丢失。
+          rec.state = oldState;
+          rec.stateSince = oldSince;
+          log("  ⚠️ 状态变化告警发送失败，已回退状态，下一轮会重试");
+        }
       }
     }
 
@@ -1525,7 +1551,13 @@ export async function runMonitor({ cfg, state, notifier, log = () => {}, fetchIm
         `新：${esc(info.desc.slice(0, 200))}`,
         `时间：${nowStr()}`,
       ];
-      if (await notifier.send(msg.join("\n"))) events++;
+      if (await notifier.send(msg.join("\n"))) {
+        events++;
+      } else {
+        rec.desc = oldDesc;
+        rec.descHash = oldDescHash;
+        log("  ⚠️ 文案变化告警发送失败，已回退 desc，下一轮会重试");
+      }
     }
 
     const depId = rec.departuresId;
@@ -1586,13 +1618,31 @@ export async function runMonitor({ cfg, state, notifier, log = () => {}, fetchIm
 export async function registerDiscovery({ cfg, state, notifier, log = () => {}, fetchImpl }, item) {
   const code = item.code;
   if (!code) return 0;
-  if (state.links[code] || state.discoveries[code] || knownCodes(cfg).has(code)) return 0;
+  if (state.links[code] || knownCodes(cfg).has(code)) return 0;
+
+  // ⚠️ 以前这里是「只要在 discoveries 里就 return 0」，后果很严重：
+  // **首次发现时是满员/已关闭的码，之后变成可加入也永远不会再被探测** ——
+  // 而发现源搜到的码绝大多数当时都是满员的，等于这个机器人最核心的承诺
+  // （"链接开放时告诉你"）在最常见的路径上失效。
+  //
+  // 现在：只有**已经知道它是 open** 的才跳过；已知但不是 open 的，**每轮重新探一次**，
+  // 状态一变就提醒。代价是每轮多几个请求，换来的是不漏报。
+  const prev = state.discoveries[code];
+  if (prev && prev.state === "open") return 0;
 
   const info = await probeJoin(code, { fetchImpl });
+  const prevState = prev ? prev.state : null;
   item.state = info.state;
   item.foundAt = nowStamp();
   item.appName = item.appName || info.appName || info.title || "";
-  state.discoveries[code] = item;
+
+  // 状态没变的复探：只刷新时间，**不发消息**（否则同一码每轮都会被"发现"一次，变成噪音）
+  if (prev && prevState === info.state) {
+    prev.foundAt = item.foundAt;
+    prev.lastChecked = info.checkedAt;
+    prev.context = item.context || prev.context;
+    return 0;
+  }
 
   const aw = cfg.autoWatchKeywords || [];
   const blob = ((item.appName || "") + " " + (item.context || "")).toLowerCase();
@@ -1630,7 +1680,7 @@ export async function registerDiscovery({ cfg, state, notifier, log = () => {}, 
   }
 
   const msg = [
-    "<b>🆕 发现新的 TF 链接</b>",
+    prevState ? "<b>🔄 之前发现的链接状态变了</b>" : "<b>🆕 发现新的 TF 链接</b>",
     `join 码：<code>${esc(code)}</code>`,
     `链接：${esc(info.url)}`,
     `当前状态：<b>${STATE_LABEL[info.state] || info.state}</b>`,
@@ -1647,7 +1697,21 @@ export async function registerDiscovery({ cfg, state, notifier, log = () => {}, 
   else if (wishJoined) msg.push("（这个 App 你标记过「已加入」，所以没自动加进监控 —— 但新链接仍然告诉你）");
   else if (info.state === "open") msg.push(`（未自动加入监控：应用名没命中 autoWatchKeywords。要盯就发 /add ${esc(code)}）`);
   msg.push(`时间：${nowStr()}`);
-  return (await notifier.send(msg.join("\n"))) ? 1 : 0;
+
+  // ⚠️ 记账要放在**发送成功之后**：以前先写 discoveries 再发，一旦发送失败
+  // （Telegram 429/5xx/网络抖动），这条告警就永久丢了 —— 下一轮被去重门挡住，再也不会提。
+  const sent = await notifier.send(msg.join("\n"));
+  if (sent) {
+    state.discoveries[code] = item;
+    // 裁剪：discoveries 只增不删的话 /links 迟早被 tgPrepare 静默截断（实测约 40-90 条就截）
+    const keys = Object.keys(state.discoveries);
+    if (keys.length > 60) {
+      keys.sort((a, b) => String(state.discoveries[a].foundAt || "").localeCompare(String(state.discoveries[b].foundAt || "")));
+      for (const k of keys.slice(0, keys.length - 60)) delete state.discoveries[k];
+    }
+  }
+  else log(`  ⚠️ 发现告警发送失败，先不记账，下一轮会重试（${code}）`);
+  return sent ? 1 : 0;
 }
 
 /**
@@ -1824,7 +1888,9 @@ export function renderStatus(cfg, state) {
 
 export function renderLinks(state) {
   const links = Object.keys(state.links || {});
-  const disc = Object.keys(state.discoveries || {});
+  // 已经在监控里的码不再列到"历史发现"那栏 —— 否则同一个码在同一份输出里
+  // 一处说"监控中"、一处说"未在监控"，自相矛盾
+  const disc = Object.keys(state.discoveries || {}).filter((c) => !state.links[c]);
   if (!links.length && !disc.length) return "还没有任何记录。";
   const L = ["<b>已知 join 码</b>"];
   for (const code of links.sort()) {
@@ -1890,10 +1956,15 @@ export async function handleCommand({ cfg, state, notifier, text, chatId, log = 
     return;
   }
   const parts = String(text || "").trim().split(/\s+/);
-  if (!parts.length || !parts[0]) return;
+  if (!parts.length || !parts[0]) return { mutated: false };
   const cmd = parts[0].split("@")[0].toLowerCase();
   log("收到命令：" + cmd);
   const run = runner || { runMonitor, runDiscovery };
+  // 这条命令有没有改 state。runner 据此决定要不要落盘 ——
+  // 只读命令（/status /apps /links /find /help …）**绝不能写回整份 state**：
+  // 它会把这段时间里 cron 或别的命令写下的更新整份覆盖掉（实测过：/status 一回写，
+  // cron 刚记录的"满员→可加入"就没了，下一轮还会重复告警一次）。
+  let mutated = false;
 
   if (cmd === "/start" || cmd === "/help") {
     // 顺手把 Telegram 的命令菜单刷成当前版本 —— 加了新命令后，
@@ -1913,10 +1984,12 @@ export async function handleCommand({ cfg, state, notifier, text, chatId, log = 
   } else if (cmd === "/links") {
     await notifier.send(renderLinks(state));
   } else if (cmd === "/check") {
+    mutated = true;
     await notifier.send("开始监控检查…");
     const n = await run.runMonitor({ cfg, state, notifier, log, fetchImpl });
     await notifier.send(`检查完成，${n === 0 ? "无变化" : "产生 " + n + " 条事件"}。`);
   } else if (cmd === "/scan") {
+    mutated = true;
     await notifier.send("开始发现扫描…");
     const n = await run.runDiscovery({ cfg, state, notifier, log, fetchImpl });
     await notifier.send(`扫描完成，${n === 0 ? "没有新发现" : "新增 " + n + " 条"}。`);
@@ -1937,6 +2010,7 @@ export async function handleCommand({ cfg, state, notifier, text, chatId, log = 
       `监控间隔：${esc(cfg.intervalMinutes)} 分钟`,
     ].join("\n"));
   } else if (cmd === "/add") {
+    mutated = true;
     if (parts.length < 2) {
       await notifier.send("用法：<code>/add &lt;App名字&gt;</code>　或　<code>/add &lt;TestFlight链接/join码&gt;</code>\n" +
         "· 按名字加最省事：<code>/add 微信读书</code>（自己找链接、自己挑能进的那个）\n" +
@@ -1948,7 +2022,16 @@ export async function handleCommand({ cfg, state, notifier, text, chatId, log = 
     }
     const arg = parts[1].trim();
     const depId = parseDeparturesArg(arg);
-    const asCode = depId ? "" : (firstJoinCode(arg) || (/^[A-Za-z0-9]{6,14}$/.test(arg) ? arg : ""));
+    let asCode = depId ? "" : firstJoinCode(arg);
+    if (!asCode && !depId && /^[A-Za-z0-9]{6,14}$/.test(arg)) {
+      // ⚠️ 裸 token 有歧义：它可能真是 join 码，也可能是 6-14 位的英文 App 名
+      // （Telegram / Spotify / WeChat / Alipay …）。以前直接当码处理，于是
+      // `/add Telegram` 会建出一条永远"链接失效"的垃圾条目、每轮白请求一次，
+      // 而用户想加的 App 根本没加上（回复还说"已加入监控"）。
+      // 先探一下：真的是个 TestFlight 页面才当码，否则按名字走。
+      const probe = await probeJoin(arg, { fetchImpl });
+      if (probe.state !== "invalid") asCode = arg;
+    }
     const opts = {};
     let code = "";
     let givenName = "";
@@ -1969,7 +2052,15 @@ export async function handleCommand({ cfg, state, notifier, text, chatId, log = 
       }
       code = d.code;
       opts.departures = depId;
-      givenName = parts.slice(2).filter((t) => !/^(appstore|departures|bundle)=/i.test(t)).join(" ").trim();
+      // ⚠️ 这里以前只设 departures，把用户显式给的 appstore= / bundle= **静默丢掉**了
+      // （回复还建议他"可手动指定 appstore=<id>"）。和 asCode 分支用同一套解析。
+      const nameParts = [];
+      for (const t of parts.slice(2)) {
+        const m = /^(appstore|departures|bundle)=(.+)$/i.exec(t);
+        if (m) opts[m[1].toLowerCase()] = m[2].trim();
+        else nameParts.push(t);
+      }
+      givenName = nameParts.join(" ").trim();
     } else if (asCode) {
       code = asCode;
       // 名称与可选的手动指定：/add <码> 名称 appstore=123 departures=456
@@ -2016,19 +2107,27 @@ export async function handleCommand({ cfg, state, notifier, text, chatId, log = 
           r.kind === "app" && String(r.label || "").trim() === label.trim());
         const key = existing ? existing[0] : ("app:" + (bestIt && bestIt.trackId ? bestIt.trackId : label));
         const wr = (state.links[key] = state.links[key] || {});
-        Object.assign(wr, {
+        // ⚠️ 只在**这次查到了**才覆盖 id/bundle —— 否则 iTunes 一次 429 就会把
+        // 上次查到的 appStoreId 抹成 undefined（JSON.stringify 会直接丢掉这个字段），
+        // 该 App 的"正式版更新"告警从此永久失效，而用户完全看不出发生了什么。
+        const patch = {
           kind: "app",
           label,
           appName: label,
-          appStoreId: bestIt ? bestIt.trackId : undefined,
-          appStoreName,
-          bundleId: bestIt ? bestIt.bundleId : "",
-          keywords: deriveKeywords(label, (bestIt && bestIt.bundleId) || ""),
           firstSeen: wr.firstSeen || nowStamp(),
           sources: [...new Set([...(wr.sources || []), "manual"])],
           state: "waiting",
           joined: !!wr.joined,
-        });
+        };
+        if (bestIt) {
+          patch.appStoreId = bestIt.trackId;
+          patch.appStoreName = appStoreName;
+          patch.bundleId = bestIt.bundleId || "";
+          patch.keywords = deriveKeywords(label, bestIt.bundleId || "");
+        } else if (!wr.keywords) {
+          patch.keywords = deriveKeywords(label, wr.bundleId || "");
+        }
+        Object.assign(wr, patch);
         await notifier.send([
           `✅ 已加入监控（App 级）：<b>${esc(label)}</b>`,
           bestIt ? `App Store：${esc(bestIt.trackId)}${bestIt.bundleId ? "（" + esc(bestIt.bundleId) + "）" : ""}` : "",
@@ -2067,6 +2166,7 @@ export async function handleCommand({ cfg, state, notifier, text, chatId, log = 
 
     const e = await enrichApp({ code, name: givenName, fetchImpl, log });
     const rec = (state.links[code] = state.links[code] || {});
+    if (state.removed && state.removed[code]) delete state.removed[code];   // 重新加 -> 撤销墓碑
     Object.assign(rec, {
       label: givenName || e.appName || code,
       appName: e.appName || rec.appName || "",
@@ -2111,6 +2211,7 @@ export async function handleCommand({ cfg, state, notifier, text, chatId, log = 
     await notifier.send(`正在搜「${esc(parts.slice(1).join(" "))}」…`);
     await notifier.send(await findApp({ state, query: parts.slice(1).join(" "), fetchImpl, log }));
   } else if (cmd === "/joined" || cmd === "/done" || cmd === "/unjoined") {
+    mutated = true;
     const undo = cmd === "/unjoined";
     if (parts.length < 2) {
       await notifier.send(`用法：<code>${cmd} &lt;App名字 或 join码&gt;</code>\n` +
@@ -2137,16 +2238,27 @@ export async function handleCommand({ cfg, state, notifier, text, chatId, log = 
       ? `🔔 已恢复提醒：${hit.map(([, r]) => esc(r.label || "?")).join("、")}`
       : `🔕 已标记「已加入」：${hit.map(([, r]) => esc(r.label || "?")).join("、")}\n` +
         `<i>之后这个 App 的链接状态变化不再提醒你（状态照样更新）。想恢复发 <code>/unjoined ${esc(arg.slice(0, 20))}</code></i>`);
-  } else if (cmd === "/del" && parts.length >= 2) {
+  } else if (cmd === "/del" && parts.length < 2) {
+    await notifier.send("用法：<code>/del &lt;join 码 或 App名字&gt;</code>\n例：<code>/del dTUO1uyt</code> 或 <code>/del 微信读书</code>");
+  } else if (cmd === "/del") {
+    mutated = true;
     let code = parts[1].trim().replace(/^\//, "");
     code = firstJoinCode(code) || code;
-    if (state.links[code]) {
-      delete state.links[code];
-      await notifier.send(`已移出监控：<code>${esc(code)}</code>`);
+    const hit = findWatchEntries(state, parts.slice(1).join(" ").trim());
+    if (hit.length > 1) {
+      await notifier.send(`「${esc(parts.slice(1).join(" "))}」匹配到 ${hit.length} 条 —— 说具体点或用 join 码：\n` +
+        hit.slice(0, 6).map(([k, r]) => `· ${esc(r.label || k)}　<code>${esc(k)}</code>`).join("\n"));
+    } else if (hit.length === 1) {
+      const k = hit[0][0];
+      delete state.links[k];
+      state.removed = state.removed || {};
+      state.removed[k] = nowStamp();   // 墓碑：否则配置 watch 里的码下一轮会被加回来
+      await notifier.send(`已移出监控：<code>${esc(k)}</code>\n<i>（已记下"别再监控"；想恢复就 /add 一次）</i>`);
     } else {
-      await notifier.send(`监控列表里没有 <code>${esc(code)}</code>`);
+      await notifier.send(`监控列表里没有匹配 <code>${esc(parts.slice(1).join(" "))}</code> 的条目。发 <code>/apps</code> 看有哪些。`);
     }
   } else {
     await notifier.send("未知命令。发 /help 看用法。");
   }
+  return { mutated };
 }

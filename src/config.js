@@ -49,7 +49,7 @@ export const DEFAULT_CONFIG = {
 
   // 两个 Cron 表达式：scheduled handler 靠比对 event.cron 区分该跑哪个
   cron: {
-    discovery: "0 */6 * * *",
+    discovery: "5 */6 * * *",
   },
 };
 

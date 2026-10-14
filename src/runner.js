@@ -93,7 +93,13 @@ export async function handleUpdate(env = {}, update, opts = {}) {
     // 不执行命令，但**回到发消息的那个会话**说清怎么修，并把它的 chat_id 一并告诉他。
     const allowedChat = String((cfg.telegram && cfg.telegram.chatId) || "").trim();
     const incomingChat = msg.chat && msg.chat.id != null ? String(msg.chat.id) : "";
-    if (!allowedChat && incomingChat) {
+    // ⚠️ 条件是「只要没配 TG_CHAT_ID 就绝不执行命令」，**不能要求 update 里带 chat** ——
+    // 否则伪造一个不带 chat 字段的 update 就绕过了这道兜底，命令照跑、state 照写。
+    if (!allowedChat) {
+      if (!incomingChat) {
+        log("⚠️ 未配置 TG_CHAT_ID，且 update 里没有 chat 字段 —— 拒绝执行（不写 state）");
+        return { ok: true, skipped: "未配置 TG_CHAT_ID 且无 chat 字段" };
+      }
       log("⚠️ 未配置 TG_CHAT_ID，已回复诊断信息（命令未执行）");
       const tip = [
         "⚠️ <b>我不知道该把消息发到哪个会话</b> —— 环境变量 <code>TG_CHAT_ID</code> 没配，或者配成了空值/占位值。",
@@ -118,7 +124,7 @@ export async function handleUpdate(env = {}, update, opts = {}) {
     const store = pickStorage(env);
     const state = await store.load();
     const notifier = makeNotifier({ cfg, log, fetchImpl });
-    await handleCommand({
+    const res = await handleCommand({
       cfg, state, notifier, text,
       chatId: msg.chat && msg.chat.id,
       log, fetchImpl,
@@ -131,7 +137,10 @@ export async function handleUpdate(env = {}, update, opts = {}) {
         setCommands: () => setBotCommands(env, { fetchImpl }),
       },
     });
-    await store.save(state);
+    // 只有真的改了 state 才落盘（见 handleCommand 里 mutated 的说明）——
+    // 只读命令写回整份 state 会把并发期间别人的更新整份覆盖掉。
+    if (res && res.mutated) await store.save(state);
+    else log("命令未改动状态，跳过写盘");
     return { ok: true };
   } catch (e) {
     // 记下来但**不要**把错误抛出去：抛了就是 5xx，Telegram 会反复重推同一条命令
