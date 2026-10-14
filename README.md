@@ -131,7 +131,14 @@ Cloudflare 有两条路，**任选一条**：
 3. 控制台 → `Workers & Pages` → `Create application`
 4. 找到 **`Import a repository`**（导入仓库）→ 点旁边的 `Get started`
 5. 在 **`Git account`** 里选你的 GitHub 账号 → 从列表里选 `tg-tf-monitor`
+   > ⚠️ **不要**走下面那个「通过 Git URL 克隆公共存储库」—— 那是 A-1 按钮那条路
+   > （要克隆仓库），也正是会报 `无法获取存储库内容。` 的那条。
 6. 配置项目 → `Save and Deploy`
+   > ⚠️ **Worker 名字必须填 `tg-tf-monitor`**，与 `wrangler.jsonc` 里的 `name` 一致。
+   > 不一致会在构建时报
+   > `The name in your Wrangler configuration file (<name>) must match the name of your Worker`
+   > （CF 官方排错文档里列的第一条已知问题）。
+   > 构建/部署命令接受 CF 自动预填的即可。
 7. 之后每次 push 都会自动重新部署
 
 > ⚠️ 这条路的 KV 绑定来自 `wrangler.jsonc`，所以**必须**先把真实 id 写进去；

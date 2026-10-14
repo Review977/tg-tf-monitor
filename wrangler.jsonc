@@ -16,12 +16,15 @@
   "triggers": {
     "crons": ["*/30 * * * *", "0 */6 * * *"]
   },
-  // 状态存储。部署按钮流程会自动创建并回写真实 id；
-  // 手动部署请换成 `wrangler kv namespace create STATE` 返回的 id。
+  // 状态存储（KV 命名空间 id）。
+  // ⚠️ 注意这里是**真实的命名空间 id**，不是占位符 —— 因为本仓库走的是
+  // 「导入仓库」（Import a repository）那条路，绑定直接读这个文件；
+  // 只有「Deploy to Cloudflare」按钮那条路才会自动建 KV 并回写 id。
+  // 换自己的：`wrangler kv namespace create STATE`，或控制台 Storage & Databases → KV。
   "kv_namespaces": [
     {
       "binding": "STATE",
-      "id": "00000000000000000000000000000000"
+      "id": "961ebde900514f49b61de213e42961c4"
     }
   ]
 }
