@@ -240,16 +240,92 @@ test("/add <名字>：名字有歧义时**不替用户猜**，列出来让他选
   assert.match(all, /\/add bbbbbbbb/);
 });
 
-test("/add <名字>：名字找不到时给出可执行的下一步，而不是只说失败", async () => {
+test("⭐ /add <名字>：现在没有可用链接也照样加进监控（App 级监控），等出现链接再提醒", async () => {
+  // 这是老板明确要求的语义：add 是「把这个 App 加进监控」，
+  // 跟"现在有没有可用链接"无关 —— 没有也要加，以后出现了再提醒。
   const { f } = makeFetch({ tfstorePage: "", depRows: [], itunes: { resultCount: 0, results: [] } });
   const state = normalizeState(null);
   const { sent, notifier } = collector();
-  await handleCommand({ cfg: { telegram: {} }, state, notifier, text: "/add 不存在的App名", fetchImpl: f });
+  await handleCommand({ cfg: { telegram: {} }, state, notifier, text: "/add 某还没上TF的App", fetchImpl: f });
   const all = sent.join("\n");
-  assert.equal(Object.keys(state.links).length, 0);
-  assert.match(all, /没找到名字匹配/);
-  assert.match(all, /\/find/, "要指路到 /find");
+  assert.equal(Object.keys(state.links).length, 1, "没链接也要加进去");
+  const key = Object.keys(state.links)[0];
+  assert.equal(state.links[key].kind, "app", "要建成 App 级监控条目");
+  assert.equal(state.links[key].state, "waiting");
+  assert.match(all, /已加入监控（App 级）/);
+  assert.match(all, /一旦出现能加入的链接，我会主动告诉你/);
 });
+
+test("⭐ /joined 的效果：状态照常更新，但**不发提醒**（带对照组）", async () => {
+  const { runMonitor } = await import("../src/core.js");
+  const mk = (joined) => normalizeState({
+    links: { dTUO1uyt: { label: "番茄小说", state: "full", joined, appStoreId: 1468454200,
+                         firstSeen: "2026-10-14T08:00:00Z", sources: ["manual"] } },
+    appstore: { "1468454200": { version: "7.3.9", checkedAt: "2026-10-14T08:00:00Z" } },
+  });
+  const run = async (joined) => {
+    const state = mk(joined);
+    const { sent, notifier } = collector();
+    const { f } = makeFetch({ joinHtml: load("open_zh.html"), itunes: { resultCount: 0, results: [] }, depRows: [] });
+    await runMonitor({ cfg: { watch: [], keywords: [] }, state, notifier, fetchImpl: f });
+    return { state, sent };
+  };
+  const muted = await run(true);
+  assert.equal(muted.state.links.dTUO1uyt.state, "open", "已加入的：状态照样要更新");
+  assert.equal(muted.sent.filter((t) => /状态变化/.test(t)).length, 0, "已加入的不该收到状态变化提醒");
+
+  const normal = await run(false);
+  assert.equal(normal.sent.filter((t) => /状态变化/.test(t)).length, 1, "对照组（没标记）应该收到");
+});
+
+test("/joined：按名字标记；匹配到多条时不猜，列出来让用户说具体点", async () => {
+  const state = normalizeState({
+    links: { aaaaaaaa: { label: "微信读书", state: "open" }, bbbbbbbb: { label: "微信读书" , state: "full" } },
+  });
+  const { sent, notifier } = collector();
+  await handleCommand({ cfg: { telegram: {} }, state, notifier, text: "/joined 微信读书" });
+  assert.match(sent.join("\n"), /匹配到 2 条/);
+  assert.ok(!state.links.aaaaaaaa.joined && !state.links.bbbbbbbb.joined, "有歧义时不该擅自标记");
+
+  await handleCommand({ cfg: { telegram: {} }, state, notifier, text: "/joined aaaaaaaa" });
+  assert.equal(state.links.aaaaaaaa.joined, true, "用码指定要能标上");
+  assert.ok(!state.links.bbbbbbbb.joined);
+});
+
+test("/unjoined：恢复提醒", async () => {
+  const state = normalizeState({ links: { aaaaaaaa: { label: "某App", state: "open", joined: true } } });
+  const { sent, notifier } = collector();
+  await handleCommand({ cfg: { telegram: {} }, state, notifier, text: "/unjoined 某App" });
+  assert.ok(!state.links.aaaaaaaa.joined, "要能恢复");
+  assert.match(sent.join("\n"), /已恢复提醒/);
+});
+
+test("findWatchEntries：先当码认、再当 App 级 key 认、最后按名字（精确优先）", async () => {
+  const { findWatchEntries } = await import("../src/core.js");
+  const state = normalizeState({ links: {
+    dTUO1uyt: { label: "番茄小说" },
+    "app:999": { kind: "app", label: "某愿望" },
+    abcd1234: { label: "微信读书" },
+  } });
+  assert.deepEqual(findWatchEntries(state, "dTUO1uyt").map(([k]) => k), ["dTUO1uyt"]);
+  assert.deepEqual(findWatchEntries(state, "https://testflight.apple.com/join/dTUO1uyt").map(([k]) => k), ["dTUO1uyt"]);
+  assert.deepEqual(findWatchEntries(state, "app:999").map(([k]) => k), ["app:999"]);
+  assert.deepEqual(findWatchEntries(state, "微信").map(([k]) => k), ["abcd1234"], "名字包含也能找到");
+  assert.deepEqual(findWatchEntries(state, "不存在"), []);
+  assert.deepEqual(findWatchEntries(state, ""), []);
+});
+
+test("wishMatches：App 级监控只认自己的名字，且不重复认同一个码", async () => {
+  const { wishMatches } = await import("../src/core.js");
+  const wish = { kind: "app", label: "番茄小说", keywords: ["番茄小说", "com.dragon.read"], codes: [] };
+  assert.equal(wishMatches(wish, "番茄小说", "abc12345"), true);
+  assert.equal(wishMatches(wish, "番茄小说 - 热门短剧", "abc12345"), true, "名字带后缀也算命中");
+  assert.equal(wishMatches(wish, "微信读书", "abc12345"), false, "别的 App 不能命中");
+  assert.equal(wishMatches({ ...wish, codes: ["abc12345"] }, "番茄小说", "abc12345"), false, "已经找到过的码不重复认");
+  assert.equal(wishMatches({ kind: "link", label: "番茄小说" }, "番茄小说", "x"), false, "普通链接条目不参与");
+  assert.equal(wishMatches(wish, "", "x"), false, "没有名字不硬认");
+});
+
 
 test("/add：不带参数时给用法，且说清两种主要用法", async () => {
   const state = normalizeState(null);

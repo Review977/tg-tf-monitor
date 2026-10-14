@@ -26,6 +26,7 @@ export const STATE_LABEL = {
   invalid: "链接失效 ❌",
   error: "检查失败 ⚠️",
   unknown: "状态未知 ❓",
+  waiting: "等待可用链接 ⏳",
 };
 
 // 页面里"获取 TestFlight"那段通用说明，取描述时要排除掉
@@ -665,6 +666,25 @@ function nameMatch(a, b) {
  * 认不准时**不硬猜** —— 留空并在 notes 里说明，让用户用 appstore= / departures= 手动指定。
  * 猜错 App Store id 会让"正式版更新"告警张冠李戴，比不填更糟。
  */
+/**
+ * 从 iTunes 搜索结果里挑最像查询词的一条。
+ *
+ * 抽出来是因为**同一个 App 无论走哪条路都该得到同一个结果** ——
+ * 之前 `enrichApp` 用 `>= 1` 就填、App 级监控那条路却用 `>= 3`，
+ * 于是「高德地图」按链接加能拿到 id、按名字加却拿不到。这种分叉迟早会再犯。
+ *
+ * 返回 `{ hit, score }`；score 为 0（完全不像）时 hit 为 null。
+ * score < 3 表示是近似匹配，调用方应当提醒用户核对。
+ */
+export function bestItunesHit(hits, name) {
+  let best = null, bestScore = 0;
+  for (const h of hits || []) {
+    const sc = nameMatch(h.trackName, name);
+    if (sc > bestScore) { best = h; bestScore = sc; }
+  }
+  return { hit: bestScore >= 1 ? best : null, score: bestScore };
+}
+
 export async function enrichApp({ code, name = "", fetchImpl, log = () => {} } = {}) {
   const info = await probeJoin(code, { fetchImpl });
   const appName = info.appName || info.title || name || "";
@@ -685,12 +705,8 @@ export async function enrichApp({ code, name = "", fetchImpl, log = () => {} } =
   try {
     const { hits, error } = await probeItunesSearch(term, { fetchImpl });
     if (error) out.notes.push(`iTunes 查询失败（${error}）→ 这次没填 App Store id，可以稍后重发 /add 补上`);
-    let best = null, bestScore = 0;
-    for (const h of hits) {
-      const s = nameMatch(h.trackName, appName || term);
-      if (s > bestScore) { best = h; bestScore = s; }
-    }
-    if (best && bestScore >= 1) {
+    const { hit: best, score: bestScore } = bestItunesHit(hits, appName || term);
+    if (best) {
       out.appStoreId = best.trackId;
       out.bundleId = best.bundleId;
       out.appStoreName = best.trackName;
@@ -759,9 +775,21 @@ export function renderApps(state) {
   const L = [`<b>监控中的 App（${codes.length} 个）</b>`];
   codes.forEach((code, i) => {
     const r = state.links[code];
-    const url = r.url || "https://testflight.apple.com/join/" + code;
     L.push("");
     L.push(`${i + 1}. <b>${esc(r.label || r.appName || code)}</b> — ${STATE_LABEL[r.state] || r.state || "未检查"}`);
+    if (r.kind === "app") {
+      // App 级监控没有具体链接 —— 别用 key 拼一个假 URL 出来
+      if (r.appStoreId) L.push(`   App Store ${esc(r.appStoreId)}${r.bundleId ? "（" + esc(r.bundleId) + "）" : ""}`);
+      if ((r.codes || []).length) {
+        L.push(`   已找到的链接：${r.codes.map((c) => `<code>${esc(c)}</code>`).join("、")}`);
+      } else {
+        L.push("   还没有可用的公开链接 —— 每轮 /scan 会按名字去找，出现了会主动告诉你");
+      }
+      if (r.joined) L.push("   🔕 已标记「已加入」：不再提醒（<code>/unjoined</code> 可恢复）");
+      L.push(`   加入监控 ${esc(fmtStamp(r.firstSeen) || "?")}`);
+      return;
+    }
+    const url = r.url || "https://testflight.apple.com/join/" + code;
     L.push(`   ${esc(url)}`);
     // 一行说清"绑了什么"：绑定决定了有没有版本告警 / 链接轮换检测
     const asv = r.appStoreId ? state.appstore[String(r.appStoreId)] : null;
@@ -774,6 +802,7 @@ export function renderApps(state) {
     bits.push(r.appStoreId ? `App Store ${esc(r.appStoreId)}` : "未绑 App Store");
     bits.push(r.departuresId ? `departures ${esc(r.departuresId)}` : "未绑 departures");
     L.push(`   ${bits.join(" ｜ ")}`);
+    if (r.joined) L.push("   🔕 已标记「已加入」：不再提醒它的状态变化（<code>/unjoined</code> 可恢复）");
     // 缺绑定压成一行说清"少了什么能力"，而不是两条各说一半
     const missing = [];
     if (!r.appStoreId) missing.push("版本更新告警");
@@ -1002,6 +1031,40 @@ export async function findApp({ state, query, fetchImpl, log = () => {} }) {
     "· 只有 departures 的 app id → <code>/add dep=&lt;id&gt;</code>（会自动反解出 TF 码）",
     "· 要手动指定 → <code>/add &lt;链接&gt; 名称 appstore=&lt;id&gt; departures=&lt;id&gt;</code>");
   return L.join("\n");
+}
+
+/**
+ * 按「码 / 名字」找出要操作的监控条目。给 `/joined` `/unjoined` `/del` 这类命令用。
+ * 顺序：先当码认（含完整链接），再当 App 级监控的 key 认，最后按名字（精确优先、再包含）。
+ */
+export function findWatchEntries(state, arg) {
+  const t = String(arg == null ? "" : arg).trim();
+  const links = (state && state.links) || {};
+  if (!t) return [];
+  const asCode = firstJoinCode(t) || t;
+  if (links[asCode]) return [[asCode, links[asCode]]];
+  if (links["app:" + t]) return [["app:" + t, links["app:" + t]]];
+  const all = Object.entries(links);
+  const low = t.toLowerCase();
+  const eq = all.filter(([, r]) => String(r.label || "").trim().toLowerCase() === low);
+  if (eq.length) return eq;
+  return all.filter(([, r]) => String(r.label || "").toLowerCase().includes(low));
+}
+
+/**
+ * 发现扫描捡到的这条链接，是不是命中某个「App 级监控」（`/add <名字>` 加的、当时还没有链接的那种）。
+ *
+ * 为什么单独判：`autoWatchDiscovered` 是个**全局**开关，而 App 级监控是用户**明确表达过意图**的 ——
+ * 不该被那个开关拦住，否则"以后有可用链接就提醒我"这句承诺就是空的。
+ */
+export function wishMatches(rec, foundName, foundCode) {
+  if (!rec || rec.kind !== "app") return false;
+  if ((rec.codes || []).includes(foundCode)) return false;
+  const a = String(foundName || "").trim().toLowerCase();
+  if (!a) return false;
+  const cands = [rec.label, rec.appName, ...(rec.keywords || [])]
+    .map((x) => String(x || "").trim().toLowerCase()).filter(Boolean);
+  return cands.some((c) => a === c || a.includes(c) || c.includes(a));
 }
 
 /** 关键词 = 全局配置 ∪ 各在监控 App 派生的（新加的 App 才会被 /scan 捞到） */
@@ -1376,6 +1439,11 @@ export async function runMonitor({ cfg, state, notifier, log = () => {}, fetchIm
 
   for (const [code, meta] of Object.entries(targets).sort()) {
     const rec = (state.links[code] = state.links[code] || {});
+    // App 级监控：用户按名字加的、当时还没有链接 —— 没有码可轮询，交给发现扫描去找
+    if (rec.kind === "app") {
+      log(`  ${code} 是 App 级监控（暂无链接），跳过轮询`);
+      continue;
+    }
     if (!rec.firstSeen) rec.firstSeen = nowStamp();
     if (!rec.label) rec.label = meta.label;
     if (!rec.sources) {
@@ -1401,9 +1469,14 @@ export async function runMonitor({ cfg, state, notifier, log = () => {}, fetchIm
     else delete rec.lastError;
     log(`  ${code} → ${STATE_LABEL[info.state] || info.state}${info.error ? "  (" + info.error + ")" : ""}`);
 
+    // 标记为"已加入"的条目：状态照常更新，但**不发提醒**。
+    // 为什么需要：用户已经上车了，再告诉他"链接满员了/又能进了"就是纯噪音 ——
+    // 他既不需要重新加，也没法再做什么。
+    const muted = !!rec.joined;
+
     if (oldState !== info.state) {
       rec.stateSince = nowStamp();
-      if (oldState !== undefined || info.state !== "open") {
+      if (!muted && (oldState !== undefined || info.state !== "open")) {
         const msg = [
           `<b>${esc(rec.label || code)} TF 链接状态变化</b>`,
           `链接：${esc(info.url)}`,
@@ -1426,7 +1499,7 @@ export async function runMonitor({ cfg, state, notifier, log = () => {}, fetchIm
       }
     }
 
-    if (oldDesc && info.desc && oldDesc !== info.desc) {
+    if (!muted && oldDesc && info.desc && oldDesc !== info.desc) {
       const msg = [
         `<b>${esc(rec.label || code)} TF 页面文案有变化</b>（可能对应新构建/新公告）`,
         `链接：${esc(info.url)}`,
@@ -1468,7 +1541,10 @@ export async function runMonitor({ cfg, state, notifier, log = () => {}, fetchIm
     }
     const old = state.appstore[String(aid)] || {};
     state.appstore[String(aid)] = { version: cur.version, checkedAt: nowStamp(), name: cur.name, releaseDate: cur.releaseDate || "" };
-    if (old.version && old.version !== cur.version) {
+    // 这个 App Store id 下的监控项如果**全都**标记了"已加入"，版本更新也不用提醒了
+    const allJoined = Object.values(state.links || {}).some((r) => String(r.appStoreId) === String(aid)) &&
+      Object.values(state.links || {}).filter((r) => String(r.appStoreId) === String(aid)).every((r) => r.joined);
+    if (!allJoined && old.version && old.version !== cur.version) {
       const msg = [
         `<b>App Store 正式版更新</b>：${esc(cur.name)}`,
         `版本：${esc(old.version)} → <b>${esc(cur.version)}</b>`,
@@ -1503,7 +1579,11 @@ export async function registerDiscovery({ cfg, state, notifier, log = () => {}, 
   const aw = cfg.autoWatchKeywords || [];
   const blob = ((item.appName || "") + " " + (item.context || "")).toLowerCase();
   const autoOk = !aw.length || aw.some((k) => blob.includes(String(k).toLowerCase()));
-  const watched = !!cfg.autoWatchDiscovered && autoOk && info.state === "open";
+  // 命中"App 级监控"时不受 autoWatchDiscovered 全局开关约束（见 wishMatches 的说明）
+  const wish = Object.entries(state.links || {})
+    .find(([, r]) => wishMatches(r, item.appName, code));
+  const byWish = !!wish && info.state === "open";
+  const watched = (!!cfg.autoWatchDiscovered && autoOk && info.state === "open") || byWish;
   if (watched) {
     const rec = (state.links[code] = state.links[code] || {});
     Object.assign(rec, {
@@ -1512,6 +1592,12 @@ export async function registerDiscovery({ cfg, state, notifier, log = () => {}, 
       descHash: info.descHash, lastChecked: info.checkedAt,
     });
     if (!rec.stateSince) rec.stateSince = nowStamp();
+  }
+  if (byWish) {
+    const wr = wish[1];
+    wr.codes = [...new Set([...(wr.codes || []), code])];
+    wr.lastFoundAt = nowStamp();
+    log(`  命中 App 级监控「${wr.label}」→ ${code}（${STATE_LABEL[info.state] || info.state}）`);
   }
 
   const msg = [
@@ -1670,6 +1756,14 @@ export function renderStatus(cfg, state) {
     const rec = state.links[code];
     L.push("");
     L.push(`· <b>${esc(rec.label || code)}</b> — ${STATE_LABEL[rec.state] || rec.state || "未检查"}`);
+    if (rec.kind === "app") {
+      const cs = rec.codes || [];
+      L.push(cs.length
+        ? `  已找到链接：${cs.map((c) => `<code>${esc(c)}</code>`).join("、")}`
+        : "  还没有可用的公开链接（/scan 会按名字去找）");
+      if (rec.joined) L.push("  🔕 已加入，不再提醒");
+      continue;
+    }
     L.push(`  ${esc(rec.url || "https://testflight.apple.com/join/" + code)}`);
     if (rec.appStoreId) usedAppstore.add(String(rec.appStoreId));
     const asv = rec.appStoreId ? state.appstore[String(rec.appStoreId)] : null;
@@ -1715,13 +1809,16 @@ export function renderLinks(state) {
 export const HELP = `<b>tg-tf-monitor 命令</b>
 
 <b>加 App</b>
-/add &lt;名字&gt; — 按名字**加进监控**：自己找链接、自己挑能进的那个
+/add &lt;名字&gt; — 按名字**加进监控**。**现在有没有可用链接都能加**：
+    有链接就挂上盯着；还没有就记下这个 App，等出现了主动告诉你
     例：<code>/add 微信读书</code>
 /add &lt;TestFlight链接或join码&gt; — 手上有链接时直接用
 /add dep=&lt;id&gt; — 只有 departures 的 app id 时（会反解出 TF 码）
     加的时候 App Store id、bundle id、departures.to id 会**自动补齐**
 /apps — 看监控中的 App 都盯了什么
 /del &lt;码&gt; — 移出监控
+/joined &lt;名字或码&gt; — 标记「我已经上车了」→ **之后不再提醒**它（状态照样更新）
+/unjoined &lt;名字或码&gt; — 恢复提醒
 
 <b>查 App（只查，不改监控列表）</b>
 /find &lt;名字&gt; — 按名字查 TF 链接：三路并搜，列出码 + 状态 + departures id
@@ -1845,14 +1942,43 @@ export async function handleCommand({ cfg, state, notifier, text, chatId, log = 
       const groups = matchAppsByName(look.merged, name);
 
       if (!groups.length) {
-        const exact = (look.itunes || []).find((a) => String(a.trackName || "").trim() === name);
-        await notifier.send(exact
-          ? `App Store 里有「${esc(name)}」（id <code>${esc(exact.trackId)}</code>），` +
-            `但 tfstore / departures 都没有它的公开 TF 链接 —— 加不了。\n` +
-            `<i>如果你手上有链接，直接 <code>/add &lt;链接&gt;</code></i>`
-          : `没找到名字匹配「${esc(name)}」的 TestFlight 链接。\n` +
-            `· 换个关键词查一下 → <code>/find ${esc(name.slice(0, 30))}</code>\n` +
-            `· 手上有链接就直接 → <code>/add &lt;链接&gt;</code>`);
+        // ⭐ 没有可用链接也**照样加进监控** —— 这就是「App 级监控」。
+        // 现在没有链接不代表以后没有：等发现源里出现可加入的链接时再提醒。
+        // 不能只认"名字完全相等" —— iTunes 里的名字常带后缀
+        // （「高德地图-北斗卫星无网导航…」），完全相等会一条都匹配不上。
+        // 用和 enrichApp 同一套 nameMatch 打分，认不准就不填 id（同一条纪律）。
+        const { hit: bestIt, score: itScore } = bestItunesHit(look.itunes || [], name);
+        // 标签用**用户输入的名字**（简短、他自己认得），iTunes 的完整名放附注里
+        const label = name;
+        const appStoreName = bestIt ? bestIt.trackName : "";
+        // 同一个 App 已经建过愿望就用回原来的 key，别建出两条
+        const existing = Object.entries(state.links).find(([, r]) =>
+          r.kind === "app" && String(r.label || "").trim() === label.trim());
+        const key = existing ? existing[0] : ("app:" + (bestIt && bestIt.trackId ? bestIt.trackId : label));
+        const wr = (state.links[key] = state.links[key] || {});
+        Object.assign(wr, {
+          kind: "app",
+          label,
+          appName: label,
+          appStoreId: bestIt ? bestIt.trackId : undefined,
+          appStoreName,
+          bundleId: bestIt ? bestIt.bundleId : "",
+          keywords: deriveKeywords(label, (bestIt && bestIt.bundleId) || ""),
+          firstSeen: wr.firstSeen || nowStamp(),
+          sources: [...new Set([...(wr.sources || []), "manual"])],
+          state: "waiting",
+          joined: !!wr.joined,
+        });
+        await notifier.send([
+          `✅ 已加入监控（App 级）：<b>${esc(label)}</b>`,
+          bestIt ? `App Store：${esc(bestIt.trackId)}${bestIt.bundleId ? "（" + esc(bestIt.bundleId) + "）" : ""}` : "",
+          "",
+          "现在**还没有可加入的公开 TF 链接** —— 但我记住了这个 App：",
+          "· 每轮 <code>/scan</code> 会按它的名字去 tfstore / departures / 搜索引擎找",
+          "· **一旦出现能加入的链接，我会主动告诉你**",
+          "· 也可以随时 <code>/find " + esc(name.slice(0, 20)) + "</code> 手动查一次",
+          (bestIt && itScore < 3) ? `<i>App Store 匹配到的是：${esc(appStoreName)}（近似名匹配，不确定就核对一下）</i>` : "",
+        ].filter(Boolean).join("\n"));
         return;
       }
       if (groups.length > 1) {
@@ -1928,6 +2054,33 @@ export async function handleCommand({ cfg, state, notifier, text, chatId, log = 
     }
     await notifier.send(`正在搜「${esc(parts.slice(1).join(" "))}」…`);
     await notifier.send(await findApp({ state, query: parts.slice(1).join(" "), fetchImpl, log }));
+  } else if (cmd === "/joined" || cmd === "/done" || cmd === "/unjoined") {
+    const undo = cmd === "/unjoined";
+    if (parts.length < 2) {
+      await notifier.send(`用法：<code>${cmd} &lt;App名字 或 join码&gt;</code>\n` +
+        (undo ? "恢复提醒。" : "标记「我已经上车了」→ 之后**不再提醒**这个 App 的链接状态变化（状态照样更新）。") +
+        "\n例：<code>" + cmd + " 番茄小说</code>");
+      return;
+    }
+    const arg = parts.slice(1).join(" ").trim();
+    const hit = findWatchEntries(state, arg);
+    if (!hit.length) {
+      await notifier.send(`监控列表里没有匹配「${esc(arg)}」的条目。发 <code>/apps</code> 看有哪些。`);
+      return;
+    }
+    if (hit.length > 1 && !undo) {
+      await notifier.send(`「${esc(arg)}」匹配到 ${hit.length} 条 —— 说具体点，或用 join 码：\n` +
+        hit.slice(0, 6).map(([k, r]) => `· ${esc(r.label || k)}　<code>${esc(k)}</code>`).join("\n"));
+      return;
+    }
+    for (const [, r] of hit) {
+      if (undo) { delete r.joined; delete r.joinedAt; }
+      else { r.joined = true; r.joinedAt = nowStamp(); }
+    }
+    await notifier.send(undo
+      ? `🔔 已恢复提醒：${hit.map(([, r]) => esc(r.label || "?")).join("、")}`
+      : `🔕 已标记「已加入」：${hit.map(([, r]) => esc(r.label || "?")).join("、")}\n` +
+        `<i>之后这个 App 的链接状态变化不再提醒你（状态照样更新）。想恢复发 <code>/unjoined ${esc(arg.slice(0, 20))}</code></i>`);
   } else if (cmd === "/del" && parts.length >= 2) {
     let code = parts[1].trim().replace(/^\//, "");
     code = firstJoinCode(code) || code;
