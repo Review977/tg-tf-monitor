@@ -1,0 +1,31 @@
+{
+  "name": "tg-tf-monitor",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "监控 / 发现番茄小说 TestFlight 公测链接的 Telegram 机器人（Cloudflare Workers / Vercel 无服务器版）",
+  "license": "MIT",
+  "cloudflare": {
+    "label": "TG TestFlight Monitor",
+    "products": ["Workers", "KV"],
+    "categories": ["starter"],
+    "docs_url": "https://developers.cloudflare.com/workers/",
+    "publish": true
+  },
+  "scripts": {
+    "test": "node build.mjs && node --test",
+    "build": "node build.mjs",
+    "bench": "node bench.mjs",
+    "selftest": "node cli.mjs selftest",
+    "check": "node --check src/core.js && node --check src/worker.js",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "tail": "wrangler tail"
+  },
+  "devDependencies": {
+    "wrangler": "^4.0.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

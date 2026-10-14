@@ -1,0 +1,15 @@
+# 依赖 / 本地环境
+node_modules/
+.env
+.env.local
+
+# ⚠️ .dev.vars 里是**真实密钥**（wrangler dev 用），绝不能提交
+.dev.vars
+.dev.vars.local
+
+# wrangler / vercel 本地状态
+.wrangler/
+.vercel/
+
+# 注意：dist/worker.js **要**入库 —— 老板机器上没装 Node，
+# 他是把这个文件粘进 Cloudflare 控制台的，必须随仓库提供。

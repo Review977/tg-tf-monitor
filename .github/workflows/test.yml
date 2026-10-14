@@ -1,0 +1,24 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      # 不需要 npm install —— 代码零依赖，测试用 Node 内置 test runner。
+      # 唯一的 devDependency 是 wrangler，只有真的 deploy 时才需要。
+      - name: 构建单文件产物（含撞名 / 语法 / export default 检查）
+        run: node build.mjs
+      - name: 跑测试
+        run: node --test
+      - name: 产物必须与源码同步（改了 src 忘了重跑 build 就红）
+        run: git diff --exit-code dist/worker.js

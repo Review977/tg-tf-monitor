@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="zh-CN" lang="zh-CN">
+
+<head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="shortcut icon" href="/favicon.ico" />
+    <link rel="icon" href="/favicon.ico" />
+
+    <!--[if lt IE 9]>
+        <script src="/scripts/html5.js"></script>
+    <![endif]-->
+
+    <link rel="stylesheet" href="https://www.apple.com/wss/fonts?families=SF+Pro,v1|SF+Pro+Icons,v1" type="text/css" media="all">
+    <link rel="stylesheet" type="text/css" href="/styles/interstitial-main.css" />
+
+    <title>加入 Beta 版“番茄小说 - 热门短剧全本小说电子书阅读器” - TestFlight - Apple</title>
+    <meta name="description" content="使用 TestFlight 是帮助开发者测试 Beta 版 App 的理想方式。" />
+
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+    <meta http-equiv="Pragma" content="no-cache" />
+    <meta http-equiv="Expires" content="0" />
+    <meta name="apple-itunes-app" content="app-id=899247664, app-argument=https://testflight.apple.com/join/dTUO1uyt" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="加入 Beta 版“番茄小说 - 热门短剧全本小说电子书阅读器”" />
+    <meta name="twitter:description" content="适用于 iOS" />
+    <meta name="twitter:image" content="https://is1-ssl.mzstatic.com/image/thumb/Purple211/v4/34/1a/99/341a9969-36af-b568-7153-7e45bf670527/AppIcon-0-0-1x_U007emarketing-0-8-0-85-220.png/1920x1080ia-80.png" />
+    <meta property="og:title" content="加入 Beta 版“番茄小说 - 热门短剧全本小说电子书阅读器”" />
+    <meta property="og:description" content="适用于 iOS" />
+    <meta property="og:image" content="https://is1-ssl.mzstatic.com/image/thumb/Purple211/v4/34/1a/99/341a9969-36af-b568-7153-7e45bf670527/AppIcon-0-0-1x_U007emarketing-0-8-0-85-220.png/1920x1080ia-80.png" />
+    <meta property="og:image:secure_url" content="https://is1-ssl.mzstatic.com/image/thumb/Purple211/v4/34/1a/99/341a9969-36af-b568-7153-7e45bf670527/AppIcon-0-0-1x_U007emarketing-0-8-0-85-220.png/1920x1080ia-80.png" />
+    <link rel="apple-touch-icon" href="https://is1-ssl.mzstatic.com/image/thumb/Purple211/v4/34/1a/99/341a9969-36af-b568-7153-7e45bf670527/AppIcon-0-0-1x_U007emarketing-0-8-0-85-220.png/1920x1080ia-80.png" />
+
+    <style>
+        .theme-dark .icon-hero {
+            background-image: url("../../images/tf-web-ios-512-dark.png");
+        }
+
+        .icon-hero {
+            background-image: url("../../images/tf-web-ios-512-light.png");
+        }
+
+    </style>
+
+
+    <style>
+      .app-icon.liquid-glass {
+        -webkit-mask-image: none;
+      }
+      .app-icon.liquid-glass:before {
+        display: none;
+      }
+    </style>
+    <style>
+        * { box-sizing: border-box;
+        }
+
+        body:not(.theme-dark) {
+            background: #f5f5f7;
+        }
+                                                    
+        .app-steps {
+        background: #fff;
+        border-radius: 0 0 10px 10px;
+        padding: 20px;
+        width: 100%;
+        display: flex;
+        flex-direction: column;
+        flex-grow: 1;
+        }
+                                                                                    
+        .row {
+        display: flex;
+        gap: 2%;
+        }
+
+        .gradient-column {
+        flex: 50%;
+        display: flex; 
+        flex-direction: column;
+        }
+
+        .tf-gradient, .app-gradient {
+        background: conic-gradient(from 270deg, #18B6F0, #010911);
+        width: 450px;
+        border-radius: 20px;
+        background-size: 100% 630px;
+        }
+   
+        .tf-gradient {
+        background: conic-gradient(from 270deg, #57BFF7, #060D17);
+        background-size: 100% 630px;
+        }
+
+        .app-gradient {
+        background: conic-gradient(from 270deg, #7F3A34, #942300);
+        background-size: 100% 630px;
+        }
+                                    
+        .app-area {
+        -webkit-backdrop-filter: blur(50px);
+        backdrop-filter: blur(50px);
+        width: 100%;
+        height: 270px; 
+        display: flex; 
+        align-items: center; 
+        justify-content: center;
+        border-radius: 20px 20px 0 0;
+        }
+                                    
+        .step1 {
+            font-size: 14px;
+            font-weight: 650;
+            color: #888;
+            text-align: left;
+            text-transform: uppercase;
+        }
+                                    
+        .step1 span {
+            color: #000;
+            font-size: 26px;
+            text-align: left;
+            font-weight: bold;
+            text-transform: none;
+            word-break: break-word;
+        }
+
+        .step3 {
+        color: #000;
+        font-size: 15px; 
+        text-align: left; 
+        line-height: 20px;
+        flex-grow: 1;
+        }
+
+        .beta-steps .step3 {
+            margin: 0 0 20px 0;
+            display: -webkit-box;
+            -webkit-box-orient: vertical;
+            -webkit-line-clamp: 4;
+            overflow: hidden;
+        }
+
+        a.dropshadow {
+        filter: drop-shadow(rgba(0, 0, 0, 0.15) 0 0 10px);
+        }
+
+        a.dropshadow .app-icon.callout {
+            margin-bottom: -7px;
+        }
+
+        a.dropshadow .app-icon.callout.ios {
+            background-repeat: no-repeat;
+            background-size: 150px 150px;
+            width: 150px;
+            height: 150px;
+            margin-bottom: -7px;
+        }
+
+        .app-gradient .app-icon.vision.callout {
+            width: 150px;
+            height: 150px;
+            background-size: 150px 150px;
+        }
+
+        .app-gradient .app-icon.liquid-glass.callout {
+            width: 152px;
+            height: 152px;
+            background-size: 152px 152px;
+        }
+
+        .st-button {
+            text-align: left;
+        }
+                                    
+        /* Responsive layout - makes a one column-layout instead of a two-column layout */
+        @media (max-width: 935px) {
+        .flex-item-right, .flex-item-left {
+            flex: 100%;
+        }
+        .flex-item-right {
+            margin-top: 20px;
+        }
+        .tf-gradient, .app-gradient {
+            width: 350px;
+        }
+
+         .section-content .row {
+            margin-left:0;
+            margin-right: 0;
+            flex-direction: column;
+            row-gap: 20px;
+        }
+        .app-area {
+            border-radius: 10px 10px 0 0;
+        }
+        }
+    </style>
+    <script type="text/javascript">
+      window.onload = function() {
+        var darkMode = window.matchMedia('(prefers-color-scheme: dark)').matches;
+        if (darkMode) {
+          window.document.body.classList.add('theme-dark');
+        } else {
+          window.document.body.classList.remove('theme-dark');
+        }
+
+        var isIOS = /iPad|iPhone|iPod|Mac/.test(window.navigator.userAgent) || /iPad|iPhone|iPod|Mac/.test(window.navigator.platform) || window.navigator.platform === 'MacIntel';
+        var showSteps = true && (isIOS || false);
+
+        var steps = document.getElementById('steps');
+        var status = document.getElementById('status');
+        if (steps && status) {
+            if (showSteps) {
+              steps.style.display = "block";
+              status.style.display = "none";
+            } else {
+              steps.style.display = "none";
+              status.style.display = "block";
+            }
+        }
+        var hero = document.getElementById('hero');
+        if (hero) { hero.style.display = isIOS ? "none" : "block"; };
+      }
+    </script>
+</head>
+
+<body id="overview">
+
+    <main id="main" class="main" role="main">
+        <section class="section-header">
+            <div class="section-content">
+                <div class="row">
+                    <div class="column large-centered large-10 small-12 text-center">
+                        <div id="status" style="display: none;">
+                            <div class="title-wrap">
+                                <div class="ac-logo"></div>
+                            </div>
+                                <div class="beta-status">
+                                            <div class='app-icon liquid-glass' style='background-image: url(https://is1-ssl.mzstatic.com/image/thumb/Purple211/v4/34/1a/99/341a9969-36af-b568-7153-7e45bf670527/AppIcon-0-0-1x_U007emarketing-0-8-0-85-220.png/152x152ia-80.png);'></div>
+                                    <span>要加入 Beta 版“番茄小说 - 热门短剧全本小说电子书阅读器”测试，请先在 iPhone、iPad 或 Mac 上安装 TestFlight，然后打开链接。</span>
+                                </div>
+                                <div class="divider"></div>
+                        </div>
+                        <div id="steps" style="display: none;">
+                            <div class="beta-steps">
+                                <div class="row">
+                                    <div class="gradient-column tf-gradient">
+                                        <div class="app-area">
+                                            <a href="https://apps.apple.com/us/app/testflight/id899247664?mt=8" target="_self" class="dropshadow">    
+                                                <figure class="icon-hero callout center" style="width: 150px; height: 150px;"></figure>
+                                            </a>    
+                                        </div>
+                                        <div class="app-steps">
+                                            <div class="step1">第 1 步<br/><span class="nowrap">获取 TestFlight</span></div>
+                                            <p class="step3">
+使用 <span class="nowrap">TestFlight App</span> 帮助开发者测试 Beta 版 App 和轻 App。请在 <span class="nowrap">App Store</span> 中下载适用于 iPhone、iPad、Mac、<span class="nowrap">Apple TV</span>、<span class="nowrap">Apple Vision Pro</span>、<span class="nowrap">Apple Watch</span> 和 iMessage 信息的 TestFlight。</p>
+                                            <div style="text-align: left;">
+                                                <a class="button button-outline icon icon-after" href="https://apps.apple.com/us/app/testflight/id899247664?mt=8" target="_self">在 <span class="nowrap">App Store</span> 中查看</a>
+                                            </div>
+                                        </div>  
+                                    </div>
+                                    <div class="gradient-column app-gradient">
+                                        <div class="app-area">
+                                                <a href="itms-beta://testflight.apple.com/join/dTUO1uyt" target="_self"><div class='app-icon callout liquid-glass' style='background-image: url(https://is1-ssl.mzstatic.com/image/thumb/Purple211/v4/34/1a/99/341a9969-36af-b568-7153-7e45bf670527/AppIcon-0-0-1x_U007emarketing-0-8-0-85-220.png/152x152ia-80.png);'></div></a>
+                                        </div>
+                                        <div class="app-steps">
+                                            <div class="step1">第 2 步：<br/><span>查看“番茄小说 - 热门短剧全本小说电子书阅读器” Beta 版</span></div>
+                                            <p class="step3">恭喜你获得了内测名额~&#10;新鲜功能先人一步体验~&#10;快到TestFlight上下载吧~</p>
+                                            <div class="st-button">
+                                                <a class="button button-outline" href="itms-beta://testflight.apple.com/join/dTUO1uyt" target="_self">在 TestFlight 中查看</a>
+                                            </div>
+                                        </div>  
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <article>
+            <section class="section section-hero">
+                <div class="section-content">
+                    <div class="row">
+                        <header class="column large-centered large-10 small-12 text-center">
+                            
+                            <figure class="icon-hero center" id="hero" style="display: none"></figure>
+                            <h1 class="typography-hero-headline">
+使用 TestFlight 测&#65279;试 App</h1>
+                            <p class="typography-intro">
+使用 <span class="nowrap">TestFlight App</span> 帮助开发者测试 Beta 版 App 和轻 App。请在 <span class="nowrap">App Store</span> 中下载适用于 iPhone、iPad、Mac、<span class="nowrap">Apple TV</span>、<span class="nowrap">Apple Vision Pro</span>、<span class="nowrap">Apple Watch</span> 和 iMessage 信息的 TestFlight。</p>
+                        </header>
+                    </div>
+                </div>
+            </section>
+
+                <a href="#getting-started">&nbsp;</a>
+                <section class="section section-getting-started" id="getting-started">
+                    <div class="section-content">
+                        <div class="row">
+                            <div class="column large-centered large-10 small-12">
+<h2 class="typography-subsection-headline">开始使用</h2><p>若要使用 TestFlight 测试 Beta 版 App 和轻 App，你需要接受开发者发送的电子邮件或公开链接邀请，并且拥有可用于测试的设备。你将能够访问开发者提供给你的构建版本。</p><p>注：开发者可以选择为其 Beta 版测试设置条件，例如首选设备或操作系统。你必须拥有首选设备和操作系统才能接受邀请。你可以轻点或点按邀请中的“进一步了解”来查看开发者所需的具体设备和操作系统要求。</p><p>如果你是开发者团队的成员，开发者可以允许你访问所有构建版本或特定构建版本。</p><p>要报告 Beta 版 App 中的诈骗、欺诈，或冒犯性、非法或滥用内容，请在 TestFlight App 或你的电子邮件邀请中轻点或点按“报告问题”。</p><h3 class="typography-tout">各平台所需的操作系统</h3><ul><li>iOS 或 iPadOS App：运行 iOS 16 或 iPadOS 16 或更高版本的 iPhone 或 iPad。轻 App 需要 iOS 16 或 iPadOS 16 或更高版本。</li><li>macOS App：运行 macOS 13 或更高版本的  Mac。</li><li>tvOS App：运行 tvOS 18 或更高版本的  Apple TV。</li><li>visionOS App：运行 visionOS 1 或更高版本的  Apple Vision Pro。</li><li>watchOS App：运行 watchOS 9 或更高版本的  Apple Watch。</li></ul></div>
+                        </div>
+                    </div>
+                </section>
+                <a href="#installing-testing">&nbsp;</a>
+                <section class="section section-installing-testing" id="installing-testing">
+                    <div class="section-content">
+                        <div class="row">
+                            <div class="column large-centered large-10 small-12">
+<h2 class="typography-subsection-headline">安装和测试 Beta 版 App</h2><p>
+自开发者上传构建版本起，每个构建版本最多有 90 天时间可供测试。你可以在 TestFlight 中 App 名称的下方查看剩余测试天数。每次有新的构建版本可供测试时，TestFlight 都会通知你，并提供测试内容的说明。如果使用 TestFlight 3 或更高版本，你还可以打开自动更新，即可自动安装最新的 Beta 版构建版本。</p><p>测试期结束后，你将无法再打开 Beta 版构建版本。若要安装 App 的 <span class="nowrap">App Store</span> 版本，请从 <span class="nowrap">App Store</span> 下载或购买 App。App 内购买项目仅在 Beta 版测试期间免费，测试期间的任何 App 内购买项目都无法延用到 <span class="nowrap">App Store</span> 版。</p><p>注：若要自动下载 App 内附加内容和素材（例如 Beta 版 App 安装后的 Apple 托管背景素材和管理式背景素材），请确保在 <a href="https://support.apple.com/guide/iphone/manage-purchases-subscriptions-settings-iph3dfd91de/ios">iPhone</a>、<a href="https://support.apple.com/guide/ipad/manage-purchases-subscriptions-settings-ipadee10c6e7/ipados">iPad</a>、<a href="https://support.apple.com/guide/app-store/change-app-store-preferences-mchlp2257/3.0/mac/13.0">Mac</a>、<a href="https://support.apple.com/guide/tv/welcome/tvos">Apple TV</a> 和 <a href="https://support.apple.com/guide/apple-vision-pro/welcome/visionos">Apple Vision Pro</a> 上的 App Store 设置中启用了“App 中内容”或“自动下载 App 中内容”选项。</p><p>Apple 托管背景素材：设备必须运行 iOS/iPadOS 26 或更高版本、macOS 26 或更高版本。</p><p>管理式背景素材：设备必须运行 iOS/iPadOS 16 或更高版本、macOS 13 或更高版本、Apple tvOS 18.5 或更高版本以及 visionOS 2.4 或更高版本。</p>
+<h3 class="typography-label">安装</h3><p>首先，请在用于测试的设备上安装 TestFlight。然后，接受电子邮件邀请或使用公开链接邀请安装 Beta 版 App。公开链接邀请中包含对 Beta 版 App 的描述，还可能包含截屏、App 类别，以及加入 Beta 版测试必须满足的条件。你最多可以在 30 台设备上安装 Beta 版 App。</p><p>如果不满足测试员条件，当轻点或点按 Beta 版测试邀请上的“进一步了解”时，Beta 版测试邀请将显示：开发者要求使用指定设备和操作系统进行测试。如果拥有满足条件的设备，你可以在相应设备上安装 TestFlight，然后接受 Beta 版测试邀请。</p><p>请注意，只要拥有满足开发者所设置条件的设备，并且相应设备已与 TestFlight 相关联，也可以在非首选设备上接受邀请。</p><p>如果你不想接受邀请，可以轻松<a href="#giving-feedback">提供反馈</a>，告知开发者原因以提供帮助。</p><p><span style="font-style:italic;">注意：</span> 在 TestFlight 中测试你 App 的订阅时，续期速率会加快。每个订阅都会每天续期，一周内最多 6 次，无论订阅时限是多久。</p>
+<h3 class="typography-tout" id="installing-ios">通过电子邮件或公开链接邀请安装 Beta 版 iOS 或 iPadOS App</h3><ol><li>在用于测试的 iOS 或 iPadOS 设备上<a href="https://itunes.apple.com/us/app/testflight/id899247664?mt=8">安装 TestFlight</a>。</li><li>在设备上打开电子邮件邀请并轻点“在 TestFlight 中查看”，或者轻点公开链接。</li><li>如果你是第一次测试此 App，轻点“接受”，然后轻点“安装”，以将 App 下载到设备上。</li></ol><p>注意：如有与你的设备兼容的构建版本，系统将显示“安装”按钮，让你能够接受邀请并安装兼容的构建版本。</p><p>如果你不是第一次测试此 App，轻点“更新”或“打开”。</p>
+<h3 class="typography-tout" id="installing-ios">通过电子邮件或公开链接邀请安装 Beta 版 macOS App</h3><ol><li>在用于测试的 Mac 上<a href="https://itunes.apple.com/us/app/testflight/id899247664?mt=8">安装 TestFlight</a>。</li><li>在 Mac 上，打开电子邮件邀请并点按“在 TestFlight 中查看”，或点按公开链接。</li><li>如果你是第一次测试此 App，点按“接受”，然后点按“安装”，以将 App 下载到设备上。</li></ol><p>注意：如有与你的设备兼容的构建版本，系统将显示“安装”按钮，让你能够接受邀请并安装兼容的构建版本。</p><p>如果你不是第一次测试此 App，点按“更新”或“打开”。</p>
+<h3 class="typography-tout" id="installing-tvos-email">通过电子邮件邀请安装 Beta 版 Apple tvOS App</h3><ol><li>在 <span class="nowrap">Apple TV</span> 上<a href="https://itunes.apple.com/us/app/testflight/id899247664?mt=8">安装 TestFlight</a>。</li><li>在移动设备或电脑上打开电子邮件邀请。</li><li>轻点或点按“在 TestFlight 中查看”。你将前往一个包含兑换码的网页。</li><li>在 <span class="nowrap">Apple TV 上打开 TestFlight。</span></li><li>前往“兑换”并输入兑换码。</li></ol><h3 class="typography-tout" id="installing-tvos-public-link">通过公共链接邀请安装 Beta 版 Apple tvOS App</h3><ol><li>在可登录同一 <span class="nowrap">App Store</span> 账户的 iOS 或 iPadOS 设备和 <span class="nowrap">Apple TV</span> 上<a href="https://itunes.apple.com/us/app/testflight/id899247664?mt=8">安装 TestFlight</a>。</li><li>在设备上轻点公共链接。</li><li>为你要测试的 App 轻点“接受”。</li><li>在 <span class="nowrap">Apple TV</span> 上打开 TestFlight。你必须使用与设备上所用相同的 <span class="nowrap">App Store</span> 账户登录。</li><li>安装你要测试的 App。</li></ol>
+<h3 class="typography-tout" id="installing-ios">通过电子邮件或公开链接邀请安装 Beta 版 visionOS App</h3><ol><li>在设备上，打开电子邮件邀请并轻触“在 TestFlight 中查看”，或轻触公开链接。</li><li>如果你是第一次测试此 App，轻触“接受”，然后轻触“安装”，以将 App 下载到设备上</li></ol><p>注意：如有与你的设备兼容的构建版本，系统将显示“安装”按钮，让你能够接受邀请并安装兼容的构建版本</p><p>如果你不是第一次测试此 App，轻触“更新”或“打开”。</p>
+<h3 class="typography-tout" id="installing-watchos">通过电子邮件或公共链接邀请安装 Beta 版 watchOS App</h3><ol><li>在与用于测试的 <span class="nowrap">Apple Watch</span> 配对的 iOS 设备上<a href="https://itunes.apple.com/app/testflight/id899247664?mt=8">安装 TestFlight</a>。</li><li>在 iOS 设备上，打开电子邮件邀请并轻点“在 TestFlight 中查看”，或轻点公共链接。</li><li>如果你是第一次测试该 App，轻点“接受”。</li><li>如果你要测试的是仅面向 <span class="nowrap">Apple Watch</span> 的 App，请在 App 列表中轻点“安装”。</li><li>如果该 App 是包含 <span class="nowrap">Apple Watch</span> App 的 iOS App，请先安装 iOS App，然后前往“信息”部分中的“App 详情”。如果 <span class="nowrap">Apple Watch</span> App 可用并且与你的 Apple Watch 兼容，你会看到安装、更新或打开 App 的按钮。</li></ol>
+<h3 class="typography-label">测试</h3><br>
+<h3 class="typography-tout" id="testing-imessage-apps">测试 iMessage 信息 App<span class="nowrap">（iOS 或 iPadOS 10 或更高版本）</span></h3><ol><li>在用于测试的 iOS 或 iPadOS 设备上<a href="https://itunes.apple.com/us/app/testflight/id899247664?mt=8">安装 TestFlight</a>。</li><li>在 iOS 设备上，打开电子邮件邀请并轻点“在 TestFlight 中查看”，或轻点公共链接。</li><li>如果你是第一次测试该 App，轻点“接受”。</li><li>轻点“安装”，将 App 安装到设备上。</li><li>如果你不是第一次测试该 App，轻点“更新”或“打开”。</li></ol><p>如果你要测试包含 iMessage 信息 App 的 iOS App，请从主屏幕启动 Beta 版 App。</p><p>如果你要测试的 App 仅适用于 iMessage 信息或要测试贴纸包，请从“信息”中启动 App。</p>
+<h3 class="typography-tout" id="testing-beta-app-clips">测试 Beta 版轻 App<span class="nowrap">（iOS 或 iPadOS 14 或更高版本）</span></h3><p>接受测试 App 的电子邮件或公开链接邀请后，你将在 TestFlight 中看到测试轻 App 的选项。你可以在设备上安装相应 App 或轻 App（但不能同时一起安装），并且可以随时替换。如果设备上已安装 App，测试轻 App 将替换 App，并且部分 App 数据可能会丢失。你可以在 TestFlight 中的 App 页面上轻点“安装”以重新安装 App。</p><ol><li>在用于测试的 iOS 或 iPadOS 设备上<a href="https://itunes.apple.com/us/app/testflight/id899247664?mt=8">安装 TestFlight</a>。</li><li>在 iOS 设备上，打开电子邮件邀请并轻点“在 TestFlight 中查看”，或轻点公共链接。</li><li>如果你是此 App 的新测试员，请轻点“接受”，然后轻点“安装”以下载 App 到设备上</li><p>注：如果设备有兼容的构建版本，将显示“安装”按钮，允许你接受邀请并安装兼容的构建版本。</p><p>如果你是回归测试员，请轻点“更新”或“打开”。</p><li>前往 TestFlight 中的 App 页面。</li><li>在“轻 App”部分，轻点要测试的 Beta 版轻 App 旁的“安装”、“打开”或“更新”。</li></ol>
+<h3 class="typography-tout" id="managing-automatic-updates">管理自动更新</h3><p>安装 iOS、iPadOS 或 Apple tvOS 版 <span class="nowrap">TestFlight 3</span> 或更高版本、安装 visionOS 版 TestFlight 或安装 macOS 版 TestFlight 后，系统会提示你开启自动更新。开启自动更新后即可自动安装最新的 Beta 构建版本。每当你的设备上安装了新的构建版本，TestFlight 都会通知你。你随时可以关闭自动更新。</p><p><strong>使用 TestFlight 更改你所测试的所有 Beta 版 App 的自动更新设置：</strong></p><p><i>注：此设置将应用于所有新的 Beta 版 App 构建版本。已单独设置了自动更新的 Beta 版 App 不受影响。</i></p><p>iOS 或 iPadOS 版 TestFlight</p><ol><li>打开 TestFlight，轻点右上角的“设置”。</li><li>轻点“新 App 自动更新”。</li><li>轻点开关。</li></ol><p>macOS 版 TestFlight</p><ol><li>打开 TestFlight，从 TestFlight 菜单中选择“偏好设置”。</li><li>在“通用”下，选择“新 App 自动更新”。</li></ol><p>Apple tvOS 版 TestFlight</p><ol><li>打开 TestFlight，点按顶端的“设置”标签页。</li><li>选择“自动更新”。</li><li>开启或关闭“自动更新”。</li></ol><p>visionOS 版 TestFlight </p><ol><li>打开 TestFlight，轻触左下角的“打开个人资料”。</li><li>在“App 设置”下，轻触“新 App 自动更新”开启或关闭自动更新。</li></ol><br><p><strong>使用 TestFlight 更改你所测试的个别 Beta 版 App 的自动更新设置：</strong></p><p>iOS 或 iPadOS 版 TestFlight</p><ol><li>打开 TestFlight 并前往相应 App 的页面。</li><li>在“App 信息”下，开启或关闭“自动更新”。</li></ol><p>visionOS 版 TestFlight</p><ol><li>打开 TestFlight 并前往相应 App 的页面。</li><li>在“App 设置”下，轻触“自动更新”开启或关闭自动更新。</li></ol><p>macOS 版 TestFlight</p><ol><li>打开 TestFlight 并前往相应 App 的页面。</li><li>在“App 设置”下，选择“自动更新”。</li></ol><p>Apple tvOS 版 TestFlight</p><ol><li>打开 TestFlight 并前往相应 App 的页面。</li><li>在 App 图标下点按“更多”。</li><li>点按“开启自动更新”或“关闭自动更新”。</li></ol>
+<h3 class="typography-tout" id="testing-previous-builds">测试之前版本和构建版本群组中的构建版本</h3><p>在 TestFlight 中查看 App 时，默认情况下，你会看到可供测试的最新构建版本。不过，你仍可测试其他所有可用的构建版本。</p><p>如果你的设备上已安装 App 的 <span class="nowrap">App Store</span> 版本，该版本将被 Beta 版替换。Beta 版 App 下载完成后，App 名称旁边会出现一个代表 Beta 版的橙色圆点。</p><p>如果你通过公共链接接受 TestFlight 邀请，开发者不会看到你的姓名和电子邮件地址，但能看到你的 App 使用次数和崩溃次数、App 安装日期以及最近安装的版本。</p><p><strong>iOS 和 iPadOS 版 TestFlight</strong></p><ol><li>打开 TestFlight 并前往相应 App 的页面。</li><li>轻点“之前的构建版本”，如果你在使用 Xcode Cloud，轻点“版本和构建版本群组”。</li><li>轻点“版本”标签页或“构建版本群组”标签页，然后轻点并安装你要测试的构建版本。所选构建版本将取代当前已安装的版本。</li></ol><p><strong>macOS 版 TestFlight</strong></p><ol><li>打开 TestFlight 并前往相应 App 的页面。</li><li>点按“构建版本信息”旁边的“查看之前的构建版本”，如果你在使用 Xcode Cloud，点按“版本和构建版本群组”。</li><li>点按“版本”标签页或“构建版本群组”标签页，然后选择并安装你要测试的构建版本。所选构建版本将取代当前已安装的版本。</li></ol><p><strong>Apple tvOS 版 TestFlight</strong></p><ol><li>打开 TestFlight 并前往相应 App 的页面。</li><li>选择“查看之前的构建版本”，如果你在使用 Xcode Cloud，点按“版本和构建版本群组”。</li><li>点按“版本”标签页或“构建版本群组”标签页，然后选择并安装你想要测试的构建版本。所选构建版本将取代当前已安装的版本。</li></ol><p><strong>visionOS 版 TestFlight</strong></p><ol><li>打开 TestFlight 并前往相应 App 的页面。</li><li>轻触“构建版本信息”旁边的“查看之前的构建版本”。</li><li>轻触“版本”标签页或“构建版本群组”标签页，然后轻触你要测试的构建版本旁边的“安装”。所选构建版本将取代当前已安装的版本。</li></ol></div>
+                        </div>
+                    </div>
+                </section>
+                <a href="#giving-feedback">&nbsp;</a>
+                <section class="section section-giving-feedback" id="giving-feedback">
+                    <div class="section-content">
+                        <div class="row">
+                            <div class="column large-centered large-10 small-12">
+<h2 class=“typography-subsection-headline">提供反馈</h2><p>在测试 Beta 版 App 或轻 App 时，你可以就遇到的问题向开发者发送反馈，或根据“测试什么”内容提出改进建议。你通过 TestFlight 提交的反馈也会作为 TestFlight 服务的一部分提供给 Apple。</p><p>如果你不希望接受公开链接邀请，你可以轻松提供反馈，告知开发者原因。在关闭 Beta 版邀请后，你会在 App 页面的顶部看到“留下反馈”卡片。轻点或点按“留下反馈”，从列表中选择拒绝的原因，然后轻点或点按“提交”。收到反馈已发送的确认后，轻点或点按“完成”。</p><p>要报告 Beta 版 App 中的诈骗、欺诈，或冒犯性、非法或滥用内容，请在 TestFlight App 或你的电子邮件邀请中轻点或点按“报告问题”。</p>
+<h3 id="feedback-ios-apps" class="typography-label">iOS、iPadOS、macOS 或 visionOS App</h3><p>你可以通过 TestFlight App 发送反馈，也可以直接在 Beta 版 App 或 Beta 版轻 App 中通过截屏发送反馈；同时，你还可以在发生崩溃后报告问题。如果你通过公共链接受邀测试 App，则可以选择不向开发者提供电子邮件地址或其他个人信息。Apple 也会收到你提交的所有反馈，并能将其与你的 Apple 账户相关联。</p>
+<h3 class="typography-tout" id="feedback-testflight">通过 TestFlight App 发送反馈</h3><p>iOS 或 iPadOS：</p><ol><li>在设备上打开 TestFlight App。</li><li>在 App 列表中轻点你要发送反馈的 App。</li><li>轻点“发送 Beta 版反馈”。</li><li>在共享对话框中，轻点<span class="nowrap">“包括截屏”</span>，选取一张截屏。如果你不需要发送附件，轻点<span class="nowrap">“不包括截屏”。</span></li><li>添加注释（最多 <span class=“nowrap">4,000</span> 个字符）；若你通过公共链接受邀参加测试，也可以选择输入电子邮件地址。</li><li>轻点“提交”。</li></ol><p>如果你的设备运行的是 iOS 13、iPadOS 13 或更低版本的操作系统，请轻点“发送 Beta 版反馈”以撰写发送给开发者的电子邮件。反馈电子邮件可包含有关 Beta 版 App 和你的 iOS 设备的详细信息。你还可以提供其他信息，例如必要的截屏以及再现问题所需的步骤。通过 TestFlight App 发送电子邮件反馈时，即使你是通过公共链接受邀参加测试，开发者也会看到你的电子邮件地址。</p>
+<p>visionOS：</p><ol><li>在你的设备上打开 TestFlight App。</li><li>在边栏的 App 列表中轻触你要发送反馈的 App。</li><li>轻触“发送反馈”。</li><li>在反馈对话框中，轻触“反馈”文本框添加注释（最多 4,000 个字符）。</li><li>如有需要，请轻触<span class="nowrap">“附加截屏”</span>来附加一张截屏。</li><li>在“提交”处捏合。</li></ol>
+<p>macOS：</p><ol><li>在 Mac 上打开 TestFlight App。</li><li>在边栏的 App 列表中选择你要发送反馈的 App。</li><li>点按“发送 Beta 版反馈”。</li><li>在反馈对话框中添加你的注释（最多 4,000 个字符）；若你通过公共链接受邀参加测试，也可以选择输入电子邮件地址。</li><li>如有需要，请点按“附加截屏”来附加一张截屏。</li><li>点按“提交”。</li></ol><p>注：你可以将截屏拖放到反馈文本字段中。</p>
+testflight.template.public.link.content.feedbackText.ios.with.beta.joecolor
+<p>iOS 或 iPadOS：</p><ol><li>在设备上截屏。如需详细了解如何截屏，请参阅<a href="https://support.apple.com/HT200289">在 iPhone 上截屏</a>、<a href="https://support.apple.com/HT210781">在 iPad 上截屏</a>和<a href="https://support.apple.com/HT210780">在 iPod touch 上截屏</a>。</li><li>截屏的缩略图会在设备左下角显示。轻点该缩略图，并使用<a href="https://support.apple.com/HT206885">“标记”</a>添加涂鸦和文本（如有需要）。然后轻点“完成”。</li><li>轻点<span class="nowrap">“共享 Beta 版反馈”</span>。</li><li>如有需要，你可以选择添加注释（最多 <span class="nowrap">4,000</span> 个字符）；若你通过公共链接受邀参加测试，也可以选择输入电子邮件地址。</li><li>轻点“提交”。</li></ol>
+<p>macOS：</p><ol><li>在 Mac 上截屏。如需详细了解如何截屏，请访问<a href="https://support.apple.com/HT201361">在 Mac 上截屏</a>。</li><li>截屏的缩略图会在 Mac 右下角显示。点按该缩略图打开<a href="https://support.apple.com/guide/mac-help/view-and-edit-files-with-quick-look-mh14119/11.0/mac/11.0">“快速查看”</a>窗口，并使用<a href="https://support.apple.com/guide/mac-help/mark-up-files-mchl1fd88863/mac">“标记”</a>添加涂鸦和文本（如有需要）。</li><li>在“快速查看”窗口的“共享”菜单中，点按“发送 Beta 版反馈”。</li><li>你可以选择添加注释（最多 4,000 个字符）；若你通过公共链接受邀参加测试，也可以选择输入电子邮件地址。</li><li>点按“提交”。</li></ol>
+<h3 class="typography-tout" id="sending-crash-information">发送崩溃信息</h3><p>如果在测试 Beta 版 App 或 Beta 版轻 App 时遇到崩溃问题，你会收到一条提醒，询问你是否要通过 TestFlight 向开发者发送崩溃详细信息。开发者可以选择不接收此类反馈，因此该选项仅在开发者启用时才可用。</p><p>使用 iOS 版或 iPadOS 版 TestFlight 并出现崩溃提醒时，轻点“共享”，按需求添加额外注释，然后轻点“提交”。</p><p>使用 macOS 版 TestFlight 并出现崩溃提醒时，点按“报告”，按需求添加额外注释，然后点按“好”、“发送”或“重新打开”。</p><p>使用 visionOS 版 TestFlight 并出现崩溃提醒时，轻触“共享”，按需求添加额外注释，然后在“提交”处捏合。</p>
+<h3 id="feedback-tvos-apps" class="typography-label">Apple tvOS apps</h3><p>要为 Apple tvOS App 提供反馈，请打开 TestFlight，前往相应 App 的页面，在“信息”部分查看开发者的电子邮件地址，然后向其发送电子邮件。请尽量多提供信息，包括截屏以及重现相关问题所需的步骤。请注意，当你通过 TestFlight 发送电子邮件反馈时，开发者将会看到你的电子邮件地址。</p>
+<h3 class="typography-tout" id="contacting-developer">联系开发者</h3><p>在测试开发者的 Beta 版 App 时，如果你出于反馈之外的原因需要联系开发者，可以查看开发者的电子邮件地址。在 TestFlight 中，前往相应 App 的页面，然后前往“信息”部分，轻点“App 详情”，即可查看开发者的电子邮件地址。</p></div>
+                        </div>
+                    </div>
+                </section>
+                <a href="#opting-out">&nbsp;</a>
+                <section class="section section-opting-out" id="opting-out">
+                    <div class="section-content">
+                        <div class="row">
+                            <div class="column large-centered large-10 small-12">
+<h2 class="typography-subsection-headline">退出测试</h2><p>如果你不接受电子邮件邀请，则不能安装 Beta 版 App，也不会被列为测试员；Apple 也不会利用你的电子邮件地址进行其他操作。此外，如果你想退出开发者的列表，可以使用电子邮件邀请底部的链接取消订阅以通知开发者。如果你接受了邀请但不想再测试 App，可在 TestFlight 中前往相应 App 的“信息”页面并轻点“停止测试”，将自己从测试员中删除。</p></div>
+                        </div>
+                    </div>
+                </section>
+                <a href="#privacy-data">&nbsp;</a>
+                <section class="section section-privacy-data" id="privacy-data">
+                    <div class="section-content">
+                        <div class="row">
+                            <div class="column large-centered large-10 small-12">
+<h2 class="typography-subsection-headline">你的隐私和数据</h2><p>你通过 TestFlight 测试 Beta 版 App 或 Beta 版轻 App 时，Apple 会收集并向开发者发送崩溃日志、你的个人信息（例如姓名和电子邮件地址）、使用信息以及你提交的所有反馈。直接通过电子邮件发送给开发者的信息不会与 Apple 共享。开发者只能将这些信息用于改进其 App，不得与第三方共享。Apple 可能会利用这些信息改进 TestFlight App 并检测和防范欺诈行为。如需了解更多信息，请参阅 <a href="https://www.apple.com.cn/legal/privacy/data/zh-cn/test-flight//"> TestFlight 与隐私</a>。</p></div>
+                        </div>
+                    </div>
+                </section>
+
+        </article>
+    </main>
+
+    <footer id="footer" class="footer" role="contentinfo">
+        <div class="footer-content">
+            <div class="row">
+                <div class="column large-centered large-10 small-12">
+                    <section class="footer-mini">
+                        <div class="footer-mini-legal">
+                            <div class="footer-mini-legal-copyright">Copyright &copy; 2026 Apple Inc. 保留所有权利。</div>
+                            <div class="footer-mini-legal-links">
+                                <a class="footer-mini-legal-link" href="https://www.apple.com/legal/internet-services/itunes/" target="_blank" rel="noopener">服务条款</a>
+                                <a class="footer-mini-legal-link" href="https://www.apple.com/legal/privacy/" target="_blank" rel="noopener">隐私政策</a>
+                            </div>
+                        </div>
+                    </section>
+                </div>
+            </div>
+        </div>
+    </footer>
+
+</body>
+
+</html>

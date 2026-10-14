@@ -1,0 +1,226 @@
+/**
+ * 运行编排：平台入口都调这里，逻辑只有一份。
+ *
+ *   doRun()        —— 定时任务干的事（监控 / 发现 / 两者）
+ *   handleUpdate() —— Telegram Webhook 收到消息后干的事
+ *   setWebhook()   —— 把 Telegram 的推送地址指到你的部署（含 secret_token）
+ *
+ * serverless 下没有长轮询，命令必须靠 Webhook。所以部署后**必须**跑一次 setWebhook，
+ * 否则 bot 收不到任何命令。
+ */
+
+import {
+  makeNotifier, runMonitor, runDiscovery, handleCommand, tgCall, tgPrepare,
+} from "./core.js";
+import { loadConfig, checkConfig } from "./config.js";
+import { pickStorage } from "./storage.js";
+
+function mkLog(prefix) {
+  return (msg) => console.log(`[${prefix}] ${msg}`);
+}
+
+/**
+ * 跑一轮。
+ * @param {object} env      平台环境（secrets + bindings）
+ * @param {object} opts
+ *   mode    "monitor" | "discovery" | "all"（默认 all）
+ *   dryRun  只打印不发送（用于部署前自检）
+ */
+export async function doRun(env = {}, opts = {}) {
+  const mode = opts.mode || "all";
+  const log = opts.log || mkLog("run");
+  const fetchImpl = opts.fetchImpl;
+  const cfg = loadConfig(env);
+
+  // DRY_RUN 时不强制要 token：很多人的用法是"先验证监控能不能跑通，再去配 bot"。
+  // 真部署（非 DRY_RUN）时缺 token 必须报错 —— 否则会静默变成"什么都不发"。
+  const dry = opts.dryRun || String(env.DRY_RUN || "") === "1";
+  const problems = checkConfig(cfg, { requireTelegram: !dry });
+  if (problems.length) throw new Error("配置不完整：\n  - " + problems.join("\n  - "));
+
+  const store = pickStorage(env);
+  const state = await store.load();
+  const notifier = makeNotifier({ cfg, log, dryRun: dry, fetchImpl });
+
+  log(`存储=${store.kind} 模式=${mode}`);
+  let events = 0;
+  if (mode === "monitor" || mode === "all") {
+    events += await runMonitor({ cfg, state, notifier, log, fetchImpl });
+  }
+  if (mode === "discovery" || mode === "all") {
+    events += await runDiscovery({ cfg, state, notifier, log, fetchImpl, onlySource: opts.onlySource });
+  }
+  await store.save(state);
+  log(`完成，共 ${events} 条事件。`);
+  return { events, storage: store.kind, mode };
+}
+
+/**
+ * 处理一条 Telegram update（Webhook 的 body）。
+ * 任何异常都不向外抛 —— Webhook 必须回 200，否则 Telegram 会一直重推。
+ */
+export async function handleUpdate(env = {}, update, opts = {}) {
+  const log = opts.log || mkLog("webhook");
+  const fetchImpl = opts.fetchImpl;
+  try {
+    const cfg = loadConfig(env);
+    const msg = update.message || update.channel_post || update.edited_message;
+    if (!msg) return { ok: true, skipped: "无 message 字段" };
+    const text = msg.text || "";
+    if (!text.startsWith("/")) return { ok: true, skipped: "非命令" };
+
+    const store = pickStorage(env);
+    const state = await store.load();
+    const notifier = makeNotifier({ cfg, log, fetchImpl });
+    await handleCommand({
+      cfg, state, notifier, text,
+      chatId: msg.chat && msg.chat.id,
+      log, fetchImpl,
+      runner: {
+        runMonitor: (a) => runMonitor(a),
+        runDiscovery: (a) => runDiscovery(a),
+      },
+    });
+    await store.save(state);
+    return { ok: true };
+  } catch (e) {
+    // 记下来但**不要**把错误抛出去：抛了就是 5xx，Telegram 会反复重推同一条命令
+    log("处理 update 失败（已吞掉，避免 Telegram 重推）: " + (e && e.message));
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+}
+
+/** 把 Telegram 的推送地址指到你的部署。部署后必须跑一次。 */
+export async function setWebhook(env = {}, url, opts = {}) {
+  const cfg = loadConfig(env);
+  const secret = String(env.TG_WEBHOOK_SECRET || "");
+  const params = {
+    url,
+    allowed_updates: JSON.stringify(["message", "channel_post"]),
+    drop_pending_updates: "true",
+  };
+  if (secret) params.secret_token = secret;
+  const r = await tgCall(cfg, "setWebhook", params, { fetchImpl: opts.fetchImpl });
+  return { ok: r === true, url, secretSet: !!secret };
+}
+
+export async function deleteWebhook(env = {}, opts = {}) {
+  const cfg = loadConfig(env);
+  await tgCall(cfg, "deleteWebhook", { drop_pending_updates: "true" }, { fetchImpl: opts.fetchImpl });
+  return { ok: true };
+}
+
+export async function webhookInfo(env = {}, opts = {}) {
+  const cfg = loadConfig(env);
+  return tgCall(cfg, "getWebhookInfo", {}, { fetchImpl: opts.fetchImpl });
+}
+
+/**
+ * 帮用户拿 chat_id。
+ *
+ * ⚠️ Telegram 的规则：**设了 webhook 之后 getUpdates 就返回空**。
+ * 所以这个端点只在"还没设 webhook"时有用 —— 这正是它存在的意义：
+ * 部署完先拿 chat_id，再设 webhook，顺序别反。
+ */
+export async function listChatIds(env = {}, opts = {}) {
+  const cfg = loadConfig(env);
+  if (!cfg.telegram || !cfg.telegram.token) throw new Error("需要先配 TG_TOKEN");
+  const ups = await tgCall(
+    cfg, "getUpdates",
+    { timeout: 0, allowed_updates: JSON.stringify(["message", "channel_post"]) },
+    { fetchImpl: opts.fetchImpl }
+  );
+  const seen = new Map();
+  for (const u of ups || []) {
+    const m = u.message || u.channel_post || u.edited_message || {};
+    const c = m.chat || {};
+    if (c.id !== undefined) {
+      seen.set(String(c.id), `${c.type} / ${c.title || c.username || c.first_name || ""}`);
+    }
+  }
+  let webhookSet = false;
+  try {
+    const info = await tgCall(cfg, "getWebhookInfo", {}, { fetchImpl: opts.fetchImpl });
+    webhookSet = !!(info && info.url);
+  } catch {
+    /* 查不到就算了，不影响主结果 */
+  }
+  return {
+    webhookSet,
+    chatIds: [...seen.entries()].map(([id, desc]) => ({ id, desc })),
+    hint: webhookSet
+      ? "你已经设过 webhook 了，getUpdates 会是空的。要么先撤销 webhook 再发一条消息，要么在别处查 chat_id。"
+      : "在 TG 里给 bot 发一条消息（或把它拉进群后发一条），再刷新本页。",
+  };
+}
+
+/**
+ * 部署体检：一次把"能不能正常干活"要看的都打出来。
+ * 用 GET /health 就能看，省得在平台日志里翻。
+ */
+export async function health(env = {}, opts = {}) {
+  const out = { ok: true, checks: {} };
+  let cfg;
+  try {
+    cfg = loadConfig(env);
+    out.checks.config = checkConfig(cfg).length ? checkConfig(cfg) : "OK";
+    if (checkConfig(cfg).length) out.ok = false;
+  } catch (e) {
+    out.ok = false;
+    out.checks.config = "读取失败: " + e.message;
+  }
+  try {
+    const store = pickStorage(env);
+    const st = await store.load();
+    out.checks.storage = {
+      kind: store.kind,
+      links: Object.keys(st.links || {}).length,
+      discoveries: Object.keys(st.discoveries || {}).length,
+      lastCheck: st.meta.lastCheck || null,
+      lastScan: st.meta.lastScan || null,
+    };
+  } catch (e) {
+    out.ok = false;
+    out.checks.storage = "不可用: " + e.message;
+  }
+  try {
+    const info = await webhookInfo(env, opts);
+    out.checks.webhook = {
+      url: info.url || "(未设置 —— 必须跑 setWebhook，否则收不到命令)",
+      pending: info.pending_update_count,
+      lastError: info.last_error_message || null,
+    };
+    if (!info.url) out.ok = false;
+  } catch (e) {
+    out.checks.webhook = "查询失败: " + e.message;
+    out.ok = false;
+  }
+  if (cfg) out.checks.watch = (cfg.watch || []).map((w) => w.code);
+  return out;
+}
+
+/** 自检消息文本（可直接发到 TG） */
+export function renderHealth(h) {
+  const L = [`<b>tg-tf-monitor-cloud 体检</b>`, `总体：${h.ok ? "✅ 正常" : "⚠️ 有问题"}`];
+  const c = h.checks || {};
+  L.push(`配置：${escapeAny(c.config)}`);
+  if (c.storage && typeof c.storage === "object") {
+    L.push(`存储：${escapeAny(c.storage.kind)}（监控 ${c.storage.links} / 发现 ${c.storage.discoveries}）`);
+    L.push(`上次监控：${escapeAny(c.storage.lastCheck || "从未")}｜上次扫描：${escapeAny(c.storage.lastScan || "从未")}`);
+  } else {
+    L.push(`存储：${escapeAny(c.storage)}`);
+  }
+  if (c.webhook && typeof c.webhook === "object") {
+    L.push(`Webhook：${escapeAny(c.webhook.url)}`);
+    if (c.webhook.lastError) L.push(`Webhook 错误：${escapeAny(c.webhook.lastError)}`);
+  } else {
+    L.push(`Webhook：${escapeAny(c.webhook)}`);
+  }
+  if (c.watch) L.push(`监控列表：${escapeAny(c.watch.join(", "))}`);
+  return L.join("\n");
+}
+
+function escapeAny(v) {
+  const s = typeof v === "string" ? v : JSON.stringify(v);
+  return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}

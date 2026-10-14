@@ -1,0 +1,22 @@
+# Worker 密钥（dotenv 格式）
+#
+# Cloudflare 的「Deploy to Cloudflare」按钮会读这个文件，
+# 在部署界面上逐条问你 —— 所以这里每一项都要能被人当场填出来，注释就是给他的提示。
+
+# @BotFather 发 /newbot 拿到的 token，形如 123456789:AA...
+TG_TOKEN=
+
+# 目标会话 id：群是负数（-100…），私聊是正数。
+# 拿法：先在 TG 里给 bot 发一条消息，再打开
+#   https://<你的worker>.workers.dev/chat-id?key=<ADMIN_KEY>
+# ⚠️ 顺序别反 —— 设了 webhook 之后 getUpdates 会返回空，就查不到了。
+TG_CHAT_ID=
+
+# 随机长串，例如 `openssl rand -hex 24`。两重作用：
+#   1) 作为 Telegram Webhook 的 secret_token，挡住伪造推送
+#   2) 作为 /run、/set-webhook 等运维端点的 key（没配 ADMIN_KEY 时）
+TG_WEBHOOK_SECRET=
+
+# 随机长串，保护运维端点。不填的话会用 TG_WEBHOOK_SECRET；
+# 两个都不填则运维端点一律拒绝（刻意不留默认放行的后门）。
+ADMIN_KEY=
