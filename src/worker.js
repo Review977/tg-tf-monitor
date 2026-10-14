@@ -16,7 +16,7 @@
  */
 
 import { loadConfig } from "./config.js";
-import { doRun, handleUpdate, setWebhook, deleteWebhook, health, listChatIds } from "./runner.js";
+import { doRun, handleUpdate, setWebhook, deleteWebhook, health, listChatIds, setBotCommands } from "./runner.js";
 
 const log = (m) => console.log("[worker] " + m);
 
@@ -92,7 +92,7 @@ export default {
     }
 
     // ── 运维端点（都要 key）──
-    if (path === "/run" || path === "/set-webhook" || path === "/del-webhook" || path === "/chat-id") {
+    if (path === "/run" || path === "/set-webhook" || path === "/del-webhook" || path === "/chat-id" || path === "/set-commands") {
       if (!adminOk(env, url)) {
         return text(
           "403：需要 key。用法 /run?key=<ADMIN_KEY>&mode=monitor|discovery|all\n" +
@@ -105,6 +105,10 @@ export default {
           const mode = url.searchParams.get("mode") || "all";
           const r = await doRun(env, { mode, log });
           return text(`OK mode=${r.mode} 事件=${r.events} 存储=${r.storage}`);
+        }
+        if (path === "/set-commands") {
+          const r = await setBotCommands(env);
+          return text(`OK 已注册 ${r.count} 个命令：${r.commands.join(" ")}`);
         }
         if (path === "/chat-id") {
           const r = await listChatIds(env);
@@ -144,16 +148,18 @@ export default {
         `监控列表：${JSON.stringify(h.checks.watch)}`,
         "",
         "部署顺序（别搞反，设了 webhook 之后 getUpdates 就空了）：",
-        `  1. 拿 chat_id：${url.origin}/chat-id?key=<ADMIN_KEY>`,
-        "     （先在 TG 里给 bot 发一条消息）",
-        `  2. 设推送地址：${url.origin}/set-webhook?key=<ADMIN_KEY>`,
-        `  3. 手动跑一轮：${url.origin}/run?key=<ADMIN_KEY>&mode=all`,
+        "  1. 在 TG 里给 bot 发一条消息（群里则发 /status@<你的bot用户名>）",
+        `  2. 拿 chat_id：${url.origin}/chat-id?key=<ADMIN_KEY>`,
+        "     把结果填进 TG_CHAT_ID，重新部署",
+        `  3. 设推送地址：${url.origin}/set-webhook?key=<ADMIN_KEY>`,
+        `  4. 注册命令菜单：${url.origin}/set-commands?key=<ADMIN_KEY>`,
+        `  5. 手动跑一轮：${url.origin}/run?key=<ADMIN_KEY>&mode=all`,
         "",
         "Telegram 推送地址：" + `${url.origin}/telegram`,
       ];
       return text(lines.join("\n"));
     }
 
-    return text("404。可用：POST /telegram、GET /health、GET /run、GET /set-webhook、GET /del-webhook", 404);
+    return text("404。可用：POST /telegram、GET /health、GET /run、GET /chat-id、GET /set-webhook、GET /set-commands、GET /del-webhook", 404);
   },
 };

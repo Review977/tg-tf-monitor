@@ -11,7 +11,7 @@
  * 用法：整个文件贴进 Cloudflare 控制台的 Worker 编辑器即可。
  * 该产物已被 test/handler.test.mjs 实际 import 并跑过断言。
  *
- * 源码指纹（sha256 前 16 位）：0f96871bb575e714
+ * 源码指纹（sha256 前 16 位）：2c14b1633925dcfa
  * ⚠️ 这里刻意**不放构建时间** —— 放了构建就不可复现，
  *    CI 里"产物必须与源码同步"那条检查会永远失败（这是被 CI 抓出来的）。
  */
@@ -1745,6 +1745,50 @@ async function webhookInfo(env = {}, opts = {}) {
 }
 
 /**
+ * 机器人的命令菜单（TG 输入框旁边那个「/」列表）。
+ * BotCommand 的限制（官方文档实测）：command 只能小写字母/数字/下划线、1-32 字符；
+ * description 1-256 字符。下面有测试守着，改坏了会红。
+ */
+const BOT_COMMANDS = [
+  { command: "apps", description: "看监控中的 App 各自盯了什么" },
+  { command: "find", description: "按名字搜 App（App Store id / departures / tfstore 上的 TF 码）" },
+  { command: "add", description: "加一个 App 进监控：/add <TestFlight 链接> [名称]" },
+  { command: "del", description: "移出监控：/del <join 码>" },
+  { command: "status", description: "当前监控状态" },
+  { command: "check", description: "立刻跑一轮监控" },
+  { command: "scan", description: "立刻跑一轮发现扫描" },
+  { command: "links", description: "列出已知 join 码" },
+  { command: "sources", description: "查看发现源与关键词配置" },
+  { command: "test", description: "发一条测试消息" },
+  { command: "help", description: "帮助" },
+];
+
+/** 把命令菜单注册到 Telegram（省得去 BotFather 里手敲一遍） */
+async function setBotCommands(env = {}, opts = {}) {
+  const cfg = loadConfig(env);
+  await tgCall(cfg, "setMyCommands",
+    { commands: JSON.stringify(BOT_COMMANDS) }, { fetchImpl: opts.fetchImpl });
+  return { ok: true, count: BOT_COMMANDS.length, commands: BOT_COMMANDS.map((c) => "/" + c.command) };
+}
+
+/**
+ * 机器人自己的信息。
+ * `can_read_all_group_messages` 就是「群组隐私模式是否关闭」——
+ * 这个字段让工具能**自己问出**该给用户哪种群组操作指引，而不是靠我背规则。
+ */
+async function botInfo(env = {}, opts = {}) {
+  const cfg = loadConfig(env);
+  const me = await tgCall(cfg, "getMe", {}, { fetchImpl: opts.fetchImpl });
+  return {
+    id: me.id,
+    username: me.username,
+    name: me.first_name,
+    canReadAllGroupMessages: !!me.can_read_all_group_messages,
+    canJoinGroups: !!me.can_join_groups,
+  };
+}
+
+/**
  * 帮用户拿 chat_id。
  *
  * ⚠️ Telegram 的规则：**设了 webhook 之后 getUpdates 就返回空**。
@@ -1774,12 +1818,36 @@ async function listChatIds(env = {}, opts = {}) {
   } catch {
     /* 查不到就算了，不影响主结果 */
   }
+
+  // 隐私模式直接从 Telegram 问出来，而不是靠背规则：
+  // can_read_all_group_messages=false 表示处于默认的「隐私模式」，
+  // 群里只送得到明确发给它的命令，所以要引导用户发 /xxx@<bot用户名>。
+  let canReadAllGroupMessages = null;
+  try {
+    const me = await tgCall(cfg, "getMe", {}, { fetchImpl: opts.fetchImpl });
+    canReadAllGroupMessages = !!me.can_read_all_group_messages;
+  } catch {
+    /* 同上 */
+  }
+
+  const hints = [];
+  if (webhookSet) {
+    hints.push("你已经设过 webhook 了，getUpdates 会是空的 —— 要么先撤销 webhook（/del-webhook?key=…）再发消息，要么在别处查 chat_id。");
+  } else {
+    hints.push("在 TG 里给 bot 发一条消息，再刷新本页。");
+  }
+  if (canReadAllGroupMessages === false) {
+    hints.push("想拿**群**的 chat_id：bot 目前处于默认的群组隐私模式，普通群消息不会送给它 —— " +
+      "请在群里发一条明确给它的命令，形如 /status@<你的bot用户名>，再刷新本页。");
+  } else if (canReadAllGroupMessages === true) {
+    hints.push("想拿**群**的 chat_id：隐私模式已关闭，在群里随便发一条消息就行。");
+  }
+
   return {
     webhookSet,
+    canReadAllGroupMessages,
     chatIds: [...seen.entries()].map(([id, desc]) => ({ id, desc })),
-    hint: webhookSet
-      ? "你已经设过 webhook 了，getUpdates 会是空的。要么先撤销 webhook 再发一条消息，要么在别处查 chat_id。"
-      : "在 TG 里给 bot 发一条消息（或把它拉进群后发一条），再刷新本页。",
+    hint: hints.join("\n"),
   };
 }
 
@@ -1825,6 +1893,12 @@ async function health(env = {}, opts = {}) {
     out.ok = false;
   }
   if (cfg) out.checks.watch = (cfg.watch || []).map((w) => w.code);
+  try {
+    const me = await botInfo(env, opts);
+    out.checks.bot = { username: me.username, canReadAllGroupMessages: me.canReadAllGroupMessages };
+  } catch (e) {
+    out.checks.bot = "查询失败: " + e.message;
+  }
 
   // 可执行的提醒：不设这些虽然能跑，但会静默降级成"不太安全"的形态
   const notes = [];
@@ -1963,7 +2037,7 @@ export default {
     }
 
     // ── 运维端点（都要 key）──
-    if (path === "/run" || path === "/set-webhook" || path === "/del-webhook" || path === "/chat-id") {
+    if (path === "/run" || path === "/set-webhook" || path === "/del-webhook" || path === "/chat-id" || path === "/set-commands") {
       if (!adminOk(env, url)) {
         return text(
           "403：需要 key。用法 /run?key=<ADMIN_KEY>&mode=monitor|discovery|all\n" +
@@ -1976,6 +2050,10 @@ export default {
           const mode = url.searchParams.get("mode") || "all";
           const r = await doRun(env, { mode, log });
           return text(`OK mode=${r.mode} 事件=${r.events} 存储=${r.storage}`);
+        }
+        if (path === "/set-commands") {
+          const r = await setBotCommands(env);
+          return text(`OK 已注册 ${r.count} 个命令：${r.commands.join(" ")}`);
         }
         if (path === "/chat-id") {
           const r = await listChatIds(env);
@@ -2015,16 +2093,18 @@ export default {
         `监控列表：${JSON.stringify(h.checks.watch)}`,
         "",
         "部署顺序（别搞反，设了 webhook 之后 getUpdates 就空了）：",
-        `  1. 拿 chat_id：${url.origin}/chat-id?key=<ADMIN_KEY>`,
-        "     （先在 TG 里给 bot 发一条消息）",
-        `  2. 设推送地址：${url.origin}/set-webhook?key=<ADMIN_KEY>`,
-        `  3. 手动跑一轮：${url.origin}/run?key=<ADMIN_KEY>&mode=all`,
+        "  1. 在 TG 里给 bot 发一条消息（群里则发 /status@<你的bot用户名>）",
+        `  2. 拿 chat_id：${url.origin}/chat-id?key=<ADMIN_KEY>`,
+        "     把结果填进 TG_CHAT_ID，重新部署",
+        `  3. 设推送地址：${url.origin}/set-webhook?key=<ADMIN_KEY>`,
+        `  4. 注册命令菜单：${url.origin}/set-commands?key=<ADMIN_KEY>`,
+        `  5. 手动跑一轮：${url.origin}/run?key=<ADMIN_KEY>&mode=all`,
         "",
         "Telegram 推送地址：" + `${url.origin}/telegram`,
       ];
       return text(lines.join("\n"));
     }
 
-    return text("404。可用：POST /telegram、GET /health、GET /run、GET /set-webhook、GET /del-webhook", 404);
+    return text("404。可用：POST /telegram、GET /health、GET /run、GET /chat-id、GET /set-webhook、GET /set-commands、GET /del-webhook", 404);
   },
 };

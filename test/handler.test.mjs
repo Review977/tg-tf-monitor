@@ -450,6 +450,29 @@ test(`[${label}] Webhook：/add 能自动补齐元数据（走真实入口）`, 
     }
   });
 
+test(`[${label}] /set-commands 注册命令菜单（需 key）`, async () => {
+    const calls = [];
+    const f = async (url, opts = {}) => {
+      calls.push({ url: String(url), body: opts.body });
+      return jsonRes({ ok: true, result: true });
+    };
+    globalThis.fetch = f;
+    try {
+      const env = makeEnv();
+      const bad = await worker.fetch(new Request("https://x.workers.dev/set-commands"), env, makeCtx().ctx);
+      assert.equal(bad.status, 403);
+      const ok = await worker.fetch(new Request("https://x.workers.dev/set-commands?key=s3cret-key"), env, makeCtx().ctx);
+      assert.equal(ok.status, 200);
+      assert.match(await ok.text(), /已注册 \d+ 个命令/);
+      const call = calls.find((c) => c.url.includes("/setMyCommands"));
+      assert.ok(call, "应调用 setMyCommands");
+      const list = JSON.parse(new URLSearchParams(call.body).get("commands"));
+      assert.ok(list.some((c) => c.command === "find"));
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
   test(`[${label}] 未知路径 → 404 且给出可用端点`, async () => {
     const { f } = makeFetchStub();
     globalThis.fetch = f;

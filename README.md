@@ -8,6 +8,11 @@
 
 它干什么：盯着番茄小说的 TestFlight 公测链接，**链接失效 / 名额满了 / 开发者换了新链接**
 就推 TG；顺便从 departures.to、tfstore、搜索引擎、TG 频道里找**新的 join 码**。
+还能**从 TG 里加新的 App**（`/find` `/add` `/apps`）。
+
+> 🚀 **第一次用请看 [SETUP.md](SETUP.md)** —— 从在 BotFather 建 bot 到跑起来，一共 5 步，
+> 含两个**不能反的操作顺序**（先拿 chat_id 再设 webhook；首次部署要填 ADMIN_KEY）。
+> 下面的一键部署只是其中第 ② 步。
 
 ---
 
@@ -60,6 +65,9 @@
 ## 部署 A：Cloudflare Workers（不需要装任何东西）
 
 > 控制台的中文/英文文案会随版本略有出入，下面按"在哪一类目里"写，照着找即可。
+
+> 这一节是 [SETUP.md](SETUP.md) 的第 ② 步。**建 bot、拿 token、拿 chat_id、设 webhook**
+> 都在那份文档里；这里只讲控制台里点哪里。
 
 **1. 建 KV 命名空间**
 控制台 → `Storage & Databases`（存储与数据库）→ `KV` → `Create namespace`，
@@ -132,6 +140,8 @@ https://<你的worker>.workers.dev/run?key=<ADMIN_KEY>&mode=all   ← 立刻跑�
 ---
 
 ## 部署 B：Vercel
+
+> 这一节是 [SETUP.md](SETUP.md) 的第 ② 步（Vercel 分支）。
 
 **1. 推到 GitHub**，Vercel → `Add New Project` → 导入这个仓库。
 （根目录选 `tg-tf-monitor-cloud`，或在项目设置里把 Root Directory 指过去。）
@@ -347,6 +357,7 @@ node cli.mjs selftest  # 联网验证判定逻辑
 ## 文件结构
 
 ```
+SETUP.md           创建 Bot 的完整流程（5 步）
 src/core.js        唯一实现：判定 / 解析 / 探针 / 消息 / 命令（平台无关，纯函数可单测）
 src/config.js      配置装载（内置默认 = 番茄小说那套，开箱即用）
 src/storage.js     存储适配器：CF KV / Upstash Redis / 内存

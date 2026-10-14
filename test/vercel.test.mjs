@@ -328,6 +328,74 @@ test("api/chat-id：无 key → 403", async () => {
   });
 });
 
+// ───────────────────────── 命令菜单（setMyCommands）─────────────────────────
+
+test("BOT_COMMANDS 满足 Telegram 对 BotCommand 的硬限制", async () => {
+  const { BOT_COMMANDS } = await import("../src/runner.js");
+  assert.ok(BOT_COMMANDS.length > 0 && BOT_COMMANDS.length <= 100, "最多 100 条");
+  const seen = new Set();
+  for (const c of BOT_COMMANDS) {
+    assert.match(c.command, /^[a-z0-9_]{1,32}$/, `command 只能小写字母/数字/下划线且 1-32 字符：${c.command}`);
+    assert.ok(!seen.has(c.command), "命令不能重复：" + c.command);
+    seen.add(c.command);
+    assert.ok(c.description.length >= 1 && c.description.length <= 256,
+      `description 需 1-256 字符：${c.command}`);
+  }
+  // 文档里承诺过的命令必须都在
+  for (const must of ["add", "find", "apps", "del", "status", "check", "scan", "links", "sources", "test", "help"]) {
+    assert.ok(seen.has(must), "命令菜单缺 /" + must);
+  }
+});
+
+test("api/set-commands：无 key → 403；对 key → 调 setMyCommands 且传的是合法 JSON", async () => {
+  await withEnv(BASE_ENV, async () => {
+    const calls = [];
+    const f = async (url, opts = {}) => {
+      calls.push({ url: String(url), body: opts.body });
+      return new Response(JSON.stringify({ ok: true, result: true }), { status: 200 });
+    };
+    await withFetch(f, async () => {
+      const handler = (await import("../api/set-commands.js")).default;
+
+      const bad = mockRes();
+      await handler({ method: "GET", headers: {}, query: {} }, bad);
+      assert.equal(bad.statusCode, 403);
+
+      const ok = mockRes();
+      await handler({ method: "GET", headers: {}, query: { key: "s3cret-key" } }, ok);
+      assert.equal(ok.statusCode, 200);
+      assert.equal(ok.body.ok, true);
+      assert.ok(ok.body.count >= 11);
+
+      const call = calls.find((c) => c.url.includes("/setMyCommands"));
+      assert.ok(call, "应调用 setMyCommands");
+      const params = new URLSearchParams(call.body);
+      const list = JSON.parse(params.get("commands"));
+      assert.ok(Array.isArray(list) && list.length === ok.body.count);
+      assert.ok(list.every((c) => /^[a-z0-9_]{1,32}$/.test(c.command)));
+    });
+  });
+});
+
+test("listChatIds：隐私模式直接从 getMe 问出来，并给对应指引", async () => {
+  const { listChatIds } = await import("../src/runner.js");
+  for (const [canRead, expect] of [[false, /\/status@/], [true, /随便发一条/]]) {
+    const f = async (url) => {
+      const u = String(url);
+      if (u.includes("/getUpdates")) {
+        return new Response(JSON.stringify({ ok: true, result: [{ update_id: 1, message: { chat: { id: -1001234567890, type: "supergroup", title: "群" } } }] }), { status: 200 });
+      }
+      if (u.includes("/getMe")) {
+        return new Response(JSON.stringify({ ok: true, result: { id: 1, username: "b", first_name: "B", can_read_all_group_messages: canRead } }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ ok: true, result: { url: "" } }), { status: 200 });
+    };
+    const r = await listChatIds({ TG_TOKEN: "t", TG_CHAT_ID: "1" }, { fetchImpl: f });
+    assert.equal(r.canReadAllGroupMessages, canRead);
+    assert.match(r.hint, expect, `隐私模式=${canRead} 时指引不对：${r.hint}`);
+  }
+});
+
 // ───────────────────────── Upstash 存储适配器 ─────────────────────────
 
 test("Upstash 存储：save 写 / load 读，走 REST 且带 Bearer", async () => {

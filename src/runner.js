@@ -116,6 +116,50 @@ export async function webhookInfo(env = {}, opts = {}) {
 }
 
 /**
+ * 机器人的命令菜单（TG 输入框旁边那个「/」列表）。
+ * BotCommand 的限制（官方文档实测）：command 只能小写字母/数字/下划线、1-32 字符；
+ * description 1-256 字符。下面有测试守着，改坏了会红。
+ */
+export const BOT_COMMANDS = [
+  { command: "apps", description: "看监控中的 App 各自盯了什么" },
+  { command: "find", description: "按名字搜 App（App Store id / departures / tfstore 上的 TF 码）" },
+  { command: "add", description: "加一个 App 进监控：/add <TestFlight 链接> [名称]" },
+  { command: "del", description: "移出监控：/del <join 码>" },
+  { command: "status", description: "当前监控状态" },
+  { command: "check", description: "立刻跑一轮监控" },
+  { command: "scan", description: "立刻跑一轮发现扫描" },
+  { command: "links", description: "列出已知 join 码" },
+  { command: "sources", description: "查看发现源与关键词配置" },
+  { command: "test", description: "发一条测试消息" },
+  { command: "help", description: "帮助" },
+];
+
+/** 把命令菜单注册到 Telegram（省得去 BotFather 里手敲一遍） */
+export async function setBotCommands(env = {}, opts = {}) {
+  const cfg = loadConfig(env);
+  await tgCall(cfg, "setMyCommands",
+    { commands: JSON.stringify(BOT_COMMANDS) }, { fetchImpl: opts.fetchImpl });
+  return { ok: true, count: BOT_COMMANDS.length, commands: BOT_COMMANDS.map((c) => "/" + c.command) };
+}
+
+/**
+ * 机器人自己的信息。
+ * `can_read_all_group_messages` 就是「群组隐私模式是否关闭」——
+ * 这个字段让工具能**自己问出**该给用户哪种群组操作指引，而不是靠我背规则。
+ */
+export async function botInfo(env = {}, opts = {}) {
+  const cfg = loadConfig(env);
+  const me = await tgCall(cfg, "getMe", {}, { fetchImpl: opts.fetchImpl });
+  return {
+    id: me.id,
+    username: me.username,
+    name: me.first_name,
+    canReadAllGroupMessages: !!me.can_read_all_group_messages,
+    canJoinGroups: !!me.can_join_groups,
+  };
+}
+
+/**
  * 帮用户拿 chat_id。
  *
  * ⚠️ Telegram 的规则：**设了 webhook 之后 getUpdates 就返回空**。
@@ -145,12 +189,36 @@ export async function listChatIds(env = {}, opts = {}) {
   } catch {
     /* 查不到就算了，不影响主结果 */
   }
+
+  // 隐私模式直接从 Telegram 问出来，而不是靠背规则：
+  // can_read_all_group_messages=false 表示处于默认的「隐私模式」，
+  // 群里只送得到明确发给它的命令，所以要引导用户发 /xxx@<bot用户名>。
+  let canReadAllGroupMessages = null;
+  try {
+    const me = await tgCall(cfg, "getMe", {}, { fetchImpl: opts.fetchImpl });
+    canReadAllGroupMessages = !!me.can_read_all_group_messages;
+  } catch {
+    /* 同上 */
+  }
+
+  const hints = [];
+  if (webhookSet) {
+    hints.push("你已经设过 webhook 了，getUpdates 会是空的 —— 要么先撤销 webhook（/del-webhook?key=…）再发消息，要么在别处查 chat_id。");
+  } else {
+    hints.push("在 TG 里给 bot 发一条消息，再刷新本页。");
+  }
+  if (canReadAllGroupMessages === false) {
+    hints.push("想拿**群**的 chat_id：bot 目前处于默认的群组隐私模式，普通群消息不会送给它 —— " +
+      "请在群里发一条明确给它的命令，形如 /status@<你的bot用户名>，再刷新本页。");
+  } else if (canReadAllGroupMessages === true) {
+    hints.push("想拿**群**的 chat_id：隐私模式已关闭，在群里随便发一条消息就行。");
+  }
+
   return {
     webhookSet,
+    canReadAllGroupMessages,
     chatIds: [...seen.entries()].map(([id, desc]) => ({ id, desc })),
-    hint: webhookSet
-      ? "你已经设过 webhook 了，getUpdates 会是空的。要么先撤销 webhook 再发一条消息，要么在别处查 chat_id。"
-      : "在 TG 里给 bot 发一条消息（或把它拉进群后发一条），再刷新本页。",
+    hint: hints.join("\n"),
   };
 }
 
@@ -196,6 +264,12 @@ export async function health(env = {}, opts = {}) {
     out.ok = false;
   }
   if (cfg) out.checks.watch = (cfg.watch || []).map((w) => w.code);
+  try {
+    const me = await botInfo(env, opts);
+    out.checks.bot = { username: me.username, canReadAllGroupMessages: me.canReadAllGroupMessages };
+  } catch (e) {
+    out.checks.bot = "查询失败: " + e.message;
+  }
 
   // 可执行的提醒：不设这些虽然能跑，但会静默降级成"不太安全"的形态
   const notes = [];
