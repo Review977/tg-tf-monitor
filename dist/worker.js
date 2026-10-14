@@ -11,7 +11,7 @@
  * 用法：整个文件贴进 Cloudflare 控制台的 Worker 编辑器即可。
  * 该产物已被 test/handler.test.mjs 实际 import 并跑过断言。
  *
- * 源码指纹（sha256 前 16 位）：ddcfea1ae7fa2e98
+ * 源码指纹（sha256 前 16 位）：04e53fc74590c81b
  * ⚠️ 这里刻意**不放构建时间** —— 放了构建就不可复现，
  *    CI 里"产物必须与源码同步"那条检查会永远失败（这是被 CI 抓出来的）。
  */
@@ -46,6 +46,7 @@ const STATE_LABEL = {
   error: "检查失败 ⚠️",
   unknown: "状态未知 ❓",
   waiting: "等待可用链接 ⏳",
+  found: "已找到链接 🔗",
 };
 
 // 页面里"获取 TestFlight"那段通用说明，取描述时要排除掉
@@ -802,12 +803,20 @@ function renderApps(state) {
   codes.forEach((code, i) => {
     const r = state.links[code];
     L.push("");
-    L.push(`${i + 1}. <b>${esc(r.label || r.appName || code)}</b> — ${STATE_LABEL[r.state] || r.state || "未检查"}`);
+    // App 级监控的状态是**推导**出来的：有还在监控的码就是"已找到链接"，否则"等待可用链接"。
+    // 写死 state:"waiting" 会在找到链接之后继续说谎。
+    const liveCodes = r.kind === "app" ? (r.codes || []).filter((c) => state.links[c]) : [];
+    const shownState = r.kind === "app" ? (liveCodes.length ? "found" : "waiting") : r.state;
+    L.push(`${i + 1}. <b>${esc(r.label || r.appName || code)}</b> — ${STATE_LABEL[shownState] || shownState || "未检查"}`);
     if (r.kind === "app") {
       // App 级监控没有具体链接 —— 别用 key 拼一个假 URL 出来
       if (r.appStoreId) L.push(`   App Store ${esc(r.appStoreId)}${r.bundleId ? "（" + esc(r.bundleId) + "）" : ""}`);
-      if ((r.codes || []).length) {
-        L.push(`   已找到的链接：${r.codes.map((c) => `<code>${esc(c)}</code>`).join("、")}`);
+      // ⚠️ 只显示**现在真的在监控里**的码。
+      // 以前直接显示 r.codes，于是 /del 掉链接之后这里还挂着一个幽灵码，
+      // 状态却写着"等待可用链接" —— 自相矛盾（实测截图）。
+      const live = (r.codes || []).filter((c) => state.links[c]);
+      if (live.length) {
+        L.push(`   已找到的链接：${live.map((c) => `<code>${esc(c)}</code>`).join("、")}`);
       } else {
         L.push("   还没有可用的公开链接 —— 每轮 /scan 会按名字去找，出现了会主动告诉你");
       }
@@ -1917,7 +1926,7 @@ function renderStatus(cfg, state) {
     L.push("");
     L.push(`· <b>${esc(rec.label || code)}</b> — ${STATE_LABEL[rec.state] || rec.state || "未检查"}`);
     if (rec.kind === "app") {
-      const cs = rec.codes || [];
+      const cs = (rec.codes || []).filter((c) => state.links[c]);   // 只算真的在监控的
       L.push(cs.length
         ? `  已找到链接：${cs.map((c) => `<code>${esc(c)}</code>`).join("、")}`
         : "  还没有可用的公开链接（/scan 会按名字去找）");
@@ -2312,6 +2321,10 @@ async function handleCommand({ cfg, state, notifier, text, chatId, log = () => {
     } else if (hit.length === 1) {
       const k = hit[0][0];
       delete state.links[k];
+      // 从各 App 级监控的 codes 里摘掉，否则 /apps 会一直挂着一个"已找到但没在监控"的幽灵码
+      for (const r of Object.values(state.links)) {
+        if (r && r.kind === "app" && Array.isArray(r.codes)) r.codes = r.codes.filter((c) => c !== k);
+      }
       state.removed = state.removed || {};
       state.removed[k] = nowStamp();   // 墓碑：否则配置 watch 里的码下一轮会被加回来
       await notifier.send(`已移出监控：<code>${esc(k)}</code>\n<i>（已记下"别再监控"；想恢复就 /add 一次）</i>`);

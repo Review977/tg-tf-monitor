@@ -1043,6 +1043,39 @@ test("⭐ 告警发送失败时不能记账，下一轮要能重发（以前一�
   assert.equal(n2, 1, "下一轮必须能重发（不能被「状态没变」的短路挡掉）");
 });
 
+test("⭐ App 级监控：/del 掉链接后不能留「幽灵码」，状态也不能继续说「等待可用链接」", async () => {
+  // 老板截图里的自相矛盾：「微信 — 等待可用链接 ⏳」下面却写着「已找到的链接：7Jg9MM8h」。
+  // 那个码是上一轮 bug 误记的，/del 之后 wish 里的记录没清，而状态标签是写死的。
+  const { renderApps, renderStatus, handleCommand } = await import("../src/core.js");
+  const state = normalizeState({
+    links: {
+      "app:414478124": { kind: "app", label: "微信", state: "waiting", codes: ["7Jg9MM8h"], firstSeen: "2026-10-14T11:02:00Z" },
+      "7Jg9MM8h": { label: "微信读书", state: "open", url: "https://testflight.apple.com/join/7Jg9MM8h" },
+    },
+  });
+  // 删掉那条链接
+  const { notifier } = collector();
+  await handleCommand({ cfg: { telegram: {} }, state, notifier, text: "/del 7Jg9MM8h" });
+
+  const apps = renderApps(state).replace(/<[^>]+>/g, "");
+  assert.ok(!/7Jg9MM8h/.test(apps), "删掉的码不该还挂在 wish 上：\n" + apps);
+  assert.ok(!/已找到的链接/.test(apps), "没有在监控的链接时不该说「已找到」");
+  assert.match(apps, /微信 — 等待可用链接/, "应该回到「等待可用链接」");
+});
+
+test("App 级监控：有在监控的链接时，状态要显示「已找到链接」而不是「等待」", async () => {
+  const { renderApps } = await import("../src/core.js");
+  const state = normalizeState({
+    links: {
+      "app:414478124": { kind: "app", label: "微信", state: "waiting", codes: ["7Jg9MM8h"], firstSeen: "2026-10-14T11:02:00Z" },
+      "7Jg9MM8h": { label: "微信读书", state: "open", url: "https://x/7Jg9MM8h" },
+    },
+  });
+  const apps = renderApps(state).replace(/<[^>]+>/g, "");
+  assert.match(apps, /微信 — 已找到链接/, "实际：\n" + apps);
+  assert.match(apps, /已找到的链接：7Jg9MM8h/);
+});
+
 test("⭐ sameAppName：微信 不能被判成 微信读书（includes 做身份判断会误加监控）", async () => {
   const { sameAppName, wishMatches } = await import("../src/core.js");
   // 同名 / 前缀+分隔符 -> 同一个 App
