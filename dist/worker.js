@@ -11,7 +11,7 @@
  * 用法：整个文件贴进 Cloudflare 控制台的 Worker 编辑器即可。
  * 该产物已被 test/handler.test.mjs 实际 import 并跑过断言。
  *
- * 源码指纹（sha256 前 16 位）：e7b34dcace78a8f4
+ * 源码指纹（sha256 前 16 位）：ddcfea1ae7fa2e98
  * ⚠️ 这里刻意**不放构建时间** —— 放了构建就不可复现，
  *    CI 里"产物必须与源码同步"那条检查会永远失败（这是被 CI 抓出来的）。
  */
@@ -1083,16 +1083,35 @@ function findWatchEntries(state, arg) {
  * 为什么单独判：`autoWatchDiscovered` 是个**全局**开关，而 App 级监控是用户**明确表达过意图**的 ——
  * 不该被那个开关拦住，否则"以后有可用链接就提醒我"这句承诺就是空的。
  */
+/**
+ * 两个名字是不是**同一个 App**。
+ *
+ * ⚠️ 这里绝不能用 includes：实测被它坑过 —— 用户 `/add 微信`（微信本体没有公开 TF 链接），
+ * 发现扫描搜到「微信读书」的可加入链接，`"微信读书".includes("微信")` 成立，
+ * 于是**把微信读书的链接当成"你要的"自动加进了监控**，用户莫名其妙多盯了一个 App。
+ *
+ * 规则：
+ *   · 完全同名 -> 是
+ *   · 一个严格是另一个的前缀，且后面**紧跟分隔符**（"番茄小说" vs "番茄小说 - 热门短剧…"）-> 是
+ *   · 其它一律不是（"微信" vs "微信读书" 后面跟的是"读"，不是分隔符 -> 不是）
+ */
+function sameAppName(a, b) {
+  const norm = (x) => String(x == null ? "" : x).trim().toLowerCase();
+  const x = norm(a), y = norm(b);
+  if (!x || !y) return false;
+  if (x === y) return true;
+  const [short, long] = x.length <= y.length ? [x, y] : [y, x];
+  if (!long.startsWith(short)) return false;
+  const rest = long.slice(short.length);
+  return /^[\s\-—–:：|(（\[【]/.test(rest);
+}
+
 function wishMatches(rec, foundName, foundCode) {
   if (!rec || rec.kind !== "app") return false;
   // 只判"像不像"，**不判 joined** —— "要不要因为已加入而跳过"是调用方的决定。
-  // 混在一起会让"匹配到了但已加入"这种情况无法区分。
   if ((rec.codes || []).includes(foundCode)) return false;
-  const a = String(foundName || "").trim().toLowerCase();
-  if (!a) return false;
-  const cands = [rec.label, rec.appName, ...(rec.keywords || [])]
-    .map((x) => String(x || "").trim().toLowerCase()).filter(Boolean);
-  return cands.some((c) => a === c || a.includes(c) || c.includes(a));
+  const cands = [rec.label, rec.appName, ...(rec.keywords || [])];
+  return cands.some((c) => sameAppName(c, foundName));
 }
 
 /**
@@ -1647,7 +1666,9 @@ async function registerDiscovery({ cfg, state, notifier, log = () => {}, fetchIm
   // 现在：只有**已经知道它是 open** 的才跳过；已知但不是 open 的，**每轮重新探一次**，
   // 状态一变就提醒。代价是每轮多几个请求，换来的是不漏报。
   const prev = state.discoveries[code];
-  if (prev && prev.state === "open") return 0;
+  // ⚠️ 这里也要放行"上一轮该发但没发出去"的（notified === false），
+  // 否则它会先被"已经知道是 open 了"挡掉，重试永远发生不了。
+  if (prev && prev.state === "open" && prev.notified !== false) return 0;
 
   const info = await probeJoin(code, { fetchImpl });
   const prevState = prev ? prev.state : null;
@@ -1655,13 +1676,23 @@ async function registerDiscovery({ cfg, state, notifier, log = () => {}, fetchIm
   item.foundAt = nowStamp();
   item.appName = item.appName || info.appName || info.title || "";
 
-  // 状态没变的复探：只刷新时间，**不发消息**（否则同一码每轮都会被"发现"一次，变成噪音）
-  if (prev && prevState === info.state) {
+  // 状态没变的复探：只刷新时间，**不发消息**（否则同一码每轮都会被"发现"一次，变成噪音）。
+  // 例外：上一轮"该发但没发出去"（notified === false）要继续重试。
+  if (prev && prevState === info.state && prev.notified !== false) {
     prev.foundAt = item.foundAt;
     prev.lastChecked = info.checkedAt;
     prev.context = item.context || prev.context;
     return 0;
   }
+
+  // ⚠️ **只有值得说的才发消息**：
+  //   · 首次发现就是「可加入」-> 发（这才是用户要的）
+  //   · 状态变化且涉及「可加入」-> 发（"现在能加入了" / "又满了"）
+  //   · 首次发现是「已满员/已关闭/探测失败」-> **只记录，不发**
+  // 以前不加这个判断：一次 /scan 能刷出十几条"已满员"，用户根本不知道这些能干什么，
+  // 而真正有用的那条被淹在噪音里。现在满员的照样记进 discoveries、照样每轮复探，
+  // 一旦变成可加入就会提醒 —— 信息没丢，只是不提前打扰。
+  const worthTelling = info.state === "open" || prevState === "open";
 
   const aw = cfg.autoWatchKeywords || [];
   const blob = ((item.appName || "") + " " + (item.context || "")).toLowerCase();
@@ -1719,18 +1750,29 @@ async function registerDiscovery({ cfg, state, notifier, log = () => {}, fetchIm
 
   // ⚠️ 记账要放在**发送成功之后**：以前先写 discoveries 再发，一旦发送失败
   // （Telegram 429/5xx/网络抖动），这条告警就永久丢了 —— 下一轮被去重门挡住，再也不会提。
+  // 记录：**不管发不发都记** —— /links 要看它，去重和"每轮复探"也靠它
+  item.notified = false;
+  state.discoveries[code] = item;
+  // 裁剪：discoveries 只增不删的话 /links 迟早被 tgPrepare 静默截断（实测约 40-90 条就截）
+  const keys = Object.keys(state.discoveries);
+  if (keys.length > 60) {
+    keys.sort((a, b) => String(state.discoveries[a].foundAt || "").localeCompare(String(state.discoveries[b].foundAt || "")));
+    for (const k of keys.slice(0, keys.length - 60)) delete state.discoveries[k];
+  }
+
+  if (!worthTelling) {
+    log(`  ${code} → ${STATE_LABEL[info.state] || info.state}（不值得打扰，只记录；变成可加入时会提醒）`);
+    return 0;
+  }
+
   const sent = await notifier.send(msg.join("\n"));
   if (sent) {
-    state.discoveries[code] = item;
-    // 裁剪：discoveries 只增不删的话 /links 迟早被 tgPrepare 静默截断（实测约 40-90 条就截）
-    const keys = Object.keys(state.discoveries);
-    if (keys.length > 60) {
-      keys.sort((a, b) => String(state.discoveries[a].foundAt || "").localeCompare(String(state.discoveries[b].foundAt || "")));
-      for (const k of keys.slice(0, keys.length - 60)) delete state.discoveries[k];
-    }
+    item.notified = true;
+    return 1;
   }
-  else log(`  ⚠️ 发现告警发送失败，先不记账，下一轮会重试（${code}）`);
-  return sent ? 1 : 0;
+  // 发送失败：notified 保持 false，下一轮不会被"状态没变"的短路挡掉，会重发
+  log(`  ⚠️ 发现告警发送失败，标记未通知，下一轮会重试（${code}）`);
+  return 0;
 }
 
 /**

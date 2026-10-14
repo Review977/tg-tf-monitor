@@ -1010,7 +1010,7 @@ test("⭐ 首次发现时是满员的码，之后变成可加入必须提醒（�
   let { f } = makeFetch({ joinHtml: load("full_zh.html") });
   await registerDiscovery({ cfg, state, notifier: c.notifier, fetchImpl: f }, item());
   assert.equal(state.discoveries.NEWCODE9.state, "full");
-  assert.equal(c.sent.filter((t) => /发现新的/.test(t)).length, 1, "首次发现要报一次");
+  assert.equal(c.sent.length, 0, "首次发现就是满员 -> **不打扰**，只记录（以前会刷一条没用的）");
 
   // 状态没变的复探：不能重复报（否则同一码每轮都被"发现"一次，变成噪音）
   c = collector();
@@ -1023,6 +1023,7 @@ test("⭐ 首次发现时是满员的码，之后变成可加入必须提醒（�
   const n = await registerDiscovery({ cfg, state, notifier: c.notifier, fetchImpl: f }, item());
   assert.equal(n, 1, "满员变可加入必须提醒（这正是漏报的那条）");
   assert.match(c.sent.join("\n"), /状态变了/);
+  assert.match(c.sent.join("\n"), /可加入/);
 });
 
 test("⭐ 告警发送失败时不能记账，下一轮要能重发（以前一次失败=永久丢失）", async () => {
@@ -1035,11 +1036,42 @@ test("⭐ 告警发送失败时不能记账，下一轮要能重发（以前一�
   const failing = { send: async () => false };            // 模拟 Telegram 429
   const n = await registerDiscovery({ cfg, state, notifier: failing, fetchImpl: f }, item());
   assert.equal(n, 0);
-  assert.ok(!state.discoveries.NEWCODE9, "发送失败就不该记账，否则去重门会永久挡住重发");
+  assert.equal(state.discoveries.NEWCODE9.notified, false, "发送失败要标记未通知");
 
   const c = collector();
   const n2 = await registerDiscovery({ cfg, state, notifier: c.notifier, fetchImpl: f }, item());
-  assert.equal(n2, 1, "下一轮必须能重发");
+  assert.equal(n2, 1, "下一轮必须能重发（不能被「状态没变」的短路挡掉）");
+});
+
+test("⭐ sameAppName：微信 不能被判成 微信读书（includes 做身份判断会误加监控）", async () => {
+  const { sameAppName, wishMatches } = await import("../src/core.js");
+  // 同名 / 前缀+分隔符 -> 同一个 App
+  assert.equal(sameAppName("微信读书", "微信读书"), true);
+  assert.equal(sameAppName("番茄小说", "番茄小说 - 热门短剧全本小说电子书阅读器"), true, "前缀后面紧跟分隔符，算同一个");
+  assert.equal(sameAppName("微信读书 TestFlight Beta", "微信读书"), true, "空格也是分隔符 -> 同一个 App（这是页面标题变体）");
+  // 只是"包含"关系 -> 不是同一个 App（这条就是实测 bug）
+  assert.equal(sameAppName("微信", "微信读书"), false, "微信 ≠ 微信读书");
+  assert.equal(sameAppName("微信", "微信输入法"), false);
+  assert.equal(sameAppName("", "微信"), false);
+  assert.equal(sameAppName(null, null), false);
+
+  // wishMatches 是它的使用者：/add 微信 的监控**不该**去认领 微信读书 的码
+  const wish = { kind: "app", label: "微信", keywords: ["微信"], codes: [] };
+  assert.equal(wishMatches(wish, "微信读书", "7Jg9MM8h"), false, "不能把别的 App 的码当成「你要的」自动加进监控");
+  assert.equal(wishMatches(wish, "微信", "abc12345"), true);
+});
+
+test("⭐ 满员链接的首次发现只记录不打扰；变成可加入时才提醒（一次 /scan 不再刷十几条没用的）", async () => {
+  const { registerDiscovery } = await import("../src/core.js");
+  const state = normalizeState(null);
+  const cfg = { autoWatchDiscovered: false, keywords: [] };
+  const c = collector();
+  const { f } = makeFetch({ joinHtml: load("full_zh.html") });
+  const n = await registerDiscovery({ cfg, state, notifier: c.notifier, fetchImpl: f },
+    { code: "FULLCODE", source: "tfstore.top", appName: "某App", context: "" });
+  assert.equal(n, 0, "满员不打扰");
+  assert.equal(c.sent.length, 0);
+  assert.equal(state.discoveries.FULLCODE.state, "full", "但必须记录下来（/links 看得到，且每轮复探）");
 });
 
 test("⭐ runMonitor：状态变化告警发送失败要回退状态，下一轮重发", async () => {
