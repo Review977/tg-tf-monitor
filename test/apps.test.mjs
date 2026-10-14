@@ -303,6 +303,68 @@ test("端到端：加一个 App 后，它的关键词进入发现过滤（新 Ap
   assert.ok(effectiveTfstoreQueries(cfg, state).length > 0, "tfstore 查询词也要带上它");
 });
 
+// ───────────────────── 版本信息（TF 构建号拿不到，把能拿到的讲清楚）─────────────────────
+
+test("daysAgo：纯函数，边界与坏输入都要稳", async () => {
+  const { daysAgo } = await import("../src/core.js");
+  const now = new Date("2026-10-14T12:00:00Z");
+  assert.equal(daysAgo("2026-10-14T02:00:00Z", now), 0);
+  assert.equal(daysAgo("2026-10-07T12:00:00Z", now), 7);
+  assert.equal(daysAgo("2026-09-30T02:17:58Z", now), 14);
+  assert.equal(daysAgo("2026-12-01T00:00:00Z", now), 0, "未来日期不该算出负数");
+  assert.equal(daysAgo("", now), null);
+  assert.equal(daysAgo("不是日期", now), null);
+  assert.equal(daysAgo(null, now), null);
+});
+
+test("/apps：显示 App Store 正式版号 + 上架日期 + 距今 + 公测页测试说明", async () => {
+  const { renderApps } = await import("../src/core.js");
+  const state = normalizeState({
+    links: {
+      dTUO1uyt: {
+        label: "番茄小说", state: "open", appStoreId: 1468454200,
+        desc: "恭喜你获得了内测名额~", keywords: ["番茄小说"],
+      },
+    },
+    appstore: {
+      "1468454200": { version: "7.3.9", releaseDate: "2026-09-30", name: "番茄小说" },
+    },
+  });
+  const out = renderApps(state);
+  assert.match(out, /App Store 正式版：7\.3\.9/, "要显示正式版号");
+  assert.match(out, /2026-09-30 上架/, "要显示上架日期");
+  assert.match(out, /\d+ 天前/, "要显示距今多久");
+  assert.match(out, /公测页测试说明：恭喜你获得了内测名额/, "要显示公测页测试说明");
+});
+
+test("/apps：上游给完整 ISO 时间戳时，日期也要显示干净（不带 T…Z）", async () => {
+  const { renderApps } = await import("../src/core.js");
+  const state = normalizeState({
+    links: { abcdef: { label: "某App", state: "open", appStoreId: 1 } },
+    appstore: { "1": { version: "1.0", releaseDate: "2026-09-30T02:17:58Z" } },
+  });
+  const out = renderApps(state);
+  assert.match(out, /2026-09-30 上架/, "应截断到天");
+  assert.ok(!/T02:17:58Z/.test(out), "不该把完整 ISO 时间戳甩给用户：" + out);
+});
+
+test("/status：明确写出「TF 构建号拿不到」，免得每次重新疑惑", async () => {
+  const { renderStatus } = await import("../src/core.js");
+  const out = renderStatus({}, normalizeState({ links: { abcdef: { label: "某App", state: "open" } } }));
+  assert.match(out, /TF 构建号/, "要提到 TF 构建号");
+  assert.match(out, /Apple 不公开/, "要说明原因");
+  assert.match(out, /TestFlight App 里看/, "要指明去哪看");
+  assert.match(out, /自己会推通知/, "要说明 Apple 已经覆盖了'有新构建'这件事");
+});
+
+test("/status：显示公测页测试说明（有些开发者会把版本号写在里面）", async () => {
+  const { renderStatus } = await import("../src/core.js");
+  const out = renderStatus({}, normalizeState({
+    links: { abcdef: { label: "某App", state: "open", desc: "v1.2.3 修复了若干问题" } },
+  }));
+  assert.match(out, /公测页测试说明：v1\.2\.3/, "开发者写在说明里的版本号要被展示出来");
+});
+
 // ───────────────────── 发送前的消息安全仍然成立 ─────────────────────
 
 test("新增的 /apps、/find 输出都能过 Telegram 的 HTML 校验", async () => {

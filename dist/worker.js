@@ -11,7 +11,7 @@
  * 用法：整个文件贴进 Cloudflare 控制台的 Worker 编辑器即可。
  * 该产物已被 test/handler.test.mjs 实际 import 并跑过断言。
  *
- * 源码指纹（sha256 前 16 位）：d1ebd469cf50cf5a
+ * 源码指纹（sha256 前 16 位）：9106f668a998212e
  * ⚠️ 这里刻意**不放构建时间** —— 放了构建就不可复现，
  *    CI 里"产物必须与源码同步"那条检查会永远失败（这是被 CI 抓出来的）。
  */
@@ -742,6 +742,14 @@ function renderApps(state) {
     if (r.appName && r.appName !== r.label) L.push(`   页面上的名字：${esc(r.appName)}`);
     L.push(`   App Store：${r.appStoreId ? esc(r.appStoreId) + (r.bundleId ? "（" + esc(r.bundleId) + "）" : "") : "<i>未关联</i>"}`);
     L.push(`   departures.to：${r.departuresId ? esc(r.departuresId) : "<i>未关联（少一层链接轮换检测）</i>"}`);
+    const asv = r.appStoreId ? state.appstore[String(r.appStoreId)] : null;
+    if (asv && asv.version) {
+      const d = daysAgo(asv.releaseDate);
+      // 日期只显示到"天" —— 上游万一给的是完整 ISO 时间戳，这里也要显示干净
+      const day = String(asv.releaseDate || "").slice(0, 10);
+      L.push(`   App Store 正式版：${esc(asv.version)}${day ? "（" + esc(day) + " 上架" + (d === null ? "" : "，" + d + " 天前") + "）" : ""}`);
+    }
+    if (r.desc) L.push(`   公测页测试说明：${esc(r.desc.slice(0, 120))}`);
     if (r.keywords && r.keywords.length) L.push(`   发现关键词：${esc(r.keywords.slice(0, 4).join(" / "))}`);
     L.push(`   加入：${esc(r.firstSeen || "?")}｜来源：${esc((r.sources || []).join(","))}`);
   });
@@ -828,6 +836,18 @@ function effectiveTfstoreQueries(cfg, state, cap = 8) {
 }
 
 // ─────────────────────────── 时间 ───────────────────────────
+
+/**
+ * 从 ISO 日期算"距今几天"。纯函数，便于单测。
+ * 用来把 App Store 正式版号讲清楚 —— "7.3.9（9 月 30 日上架，14 天前）"
+ * 比孤零零一个版本号有用得多。
+ */
+function daysAgo(isoDate, now = new Date()) {
+  const t = Date.parse(String(isoDate || ""));
+  if (!Number.isFinite(t)) return null;
+  const days = Math.floor((now.getTime() - t) / 86400000);
+  return days < 0 ? 0 : days;
+}
 
 function nowStr(d = new Date()) {
   const p = (n) => String(n).padStart(2, "0");
@@ -971,6 +991,8 @@ async function runMonitor({ cfg, state, notifier, log = () => {}, fetchImpl }) {
           `状态：${STATE_LABEL[oldState] || "首次监控"} → <b>${STATE_LABEL[info.state] || info.state}</b>`,
         ];
         if (info.appName) msg.push(`应用：${esc(info.appName)}`);
+        // 把公测页的"测试说明"原文带上：有些开发者会在这里写版本号/更新内容
+        if (info.desc) msg.push(`测试说明：${esc(info.desc.slice(0, 200))}`);
         if (info.error) msg.push(`错误：${esc(info.error)}`);
         if (["full", "closed", "invalid"].includes(info.state)) {
           // 把 Apple 的原文也带上：万一页面语言不是中/英，这行就是唯一线索
@@ -1026,13 +1048,15 @@ async function runMonitor({ cfg, state, notifier, log = () => {}, fetchImpl }) {
       continue;
     }
     const old = state.appstore[String(aid)] || {};
-    state.appstore[String(aid)] = { version: cur.version, checkedAt: nowStr(), name: cur.name };
+    state.appstore[String(aid)] = { version: cur.version, checkedAt: nowStr(), name: cur.name, releaseDate: cur.releaseDate || "" };
     if (old.version && old.version !== cur.version) {
       const msg = [
         `<b>App Store 正式版更新</b>：${esc(cur.name)}`,
         `版本：${esc(old.version)} → <b>${esc(cur.version)}</b>`,
         `上架日期：${esc(cur.releaseDate)}`,
-        "注意：正式版更新 ≠ TF 构建更新。TF 构建号只能在 TestFlight App 里看到。",
+        "",
+        "TF 上通常已经在测这个新版本（或更高的 beta）—— 但**TF 构建号 Apple 不公开**，",
+        "公测页上没有，只能在 TestFlight App 里看；有新构建时 TestFlight 自己会推通知。",
         `时间：${nowStr()}`,
       ];
       if (await notifier.send(msg.join("\n"))) events++;
@@ -1230,12 +1254,16 @@ function renderStatus(cfg, state) {
     L.push(`  ${esc(rec.url || "https://testflight.apple.com/join/" + code)}`);
     if (rec.stateSince) L.push(`  状态自 ${esc(rec.stateSince)} 起`);
     if (rec.lastChecked) L.push(`  上次检查 ${esc(rec.lastChecked)}`);
+    if (rec.desc) L.push(`  公测页测试说明：${esc(rec.desc.slice(0, 160))}`);
     if (rec.departures && rec.departures.status) L.push(`  departures.to 认为：${esc(rec.departures.status)}`);
     if (rec.lastError) L.push(`  ⚠️ ${esc(rec.lastError)}`);
   }
   for (const [aid, a] of Object.entries(state.appstore || {})) {
     L.push(`· App Store 正式版（id ${esc(aid)}）：${esc(a.version || "?")}（检查于 ${esc(a.checkedAt || "?")}）`);
   }
+  // 把"拿不到什么"直接写在消息里，免得每次都要重新疑惑一遍
+  L.push("", "<i>TF 构建号（TestFlight 里的版本/build）：Apple 不公开，公测页上也没有 —— " +
+    "只能在 TestFlight App 里看。有新构建时 TestFlight 自己会推通知。</i>");
   return L.join("\n");
 }
 

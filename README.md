@@ -401,8 +401,29 @@ TG 频道可用（`@testflight` / `@TestFlightApps` 每次各约 15 个 join 码
 
 ## 诚实的能力边界
 
-- ❌ **看不到 TF 构建号** —— Apple 不公开 beta 构建信息，公测页上也没有版本号。
-  近似信号只有"公测页文案指纹变化"（弱）和"App Store 正式版号变化"（≠ TF 构建）。
+### ❌ 看不到 TF 构建号（TestFlight 里的版本/build）
+
+这不是偷懒，是**公开渠道真的没有**。2026-10-14 从五个方向逐一验过：
+
+| 查的地方 | 结果 |
+|---|---|
+| 公测页正文 | 只有 Apple 的通用帮助文案，**无版本号** |
+| 公测页响应头 | **无 `ETag` / `Last-Modified`**（只有 `Cache-Control: max-age=600`）——连"变了没"都推不出来 |
+| Apple 公开接口（探了 `/v1/app/`、`/v1/apps/`、`/v1/join/`、`/join/<code>.json`、`/api/v1/apps/`） | **全部 404** |
+| departures.to / tfstore.top | 只给"开放 / 已满"状态，**不给版本号** |
+| `itunes.apple.com/lookup` | 只给 **App Store 正式版号**（≠ TF 构建号） |
+
+**而且这件事 Apple 已经替你覆盖了**：装了 TF 版之后，开发者每推一个新构建，
+**TestFlight 自己会推通知**，版本号也在 App 里看得到。机器人抢不过它，也不用抢。
+
+**所以机器人在消息里给你的是能拿到的全部**：
+
+- **App Store 正式版号 + 上架日期 + 距今几天** —— 正式版一升，TF 上通常就在测这个新版本（或更高的 beta）
+- **公测页的"测试说明"原文** —— 有些开发者会把版本号/更新内容写在这里，那就等于间接拿到了
+- **公测页文案指纹变化**告警
+- **链接状态**（可加入 / 已满 / 已关闭 / 失效）—— 这才是 Apple 不通知你的那部分
+
+`/status` 里也会直接写一行说明，免得每次重新疑惑一遍。
 - ❌ 不知道你的 SVIP 还剩几天（账号权益，只能在 App 里看）。
 - ⚠️ 发现源都有滞后，所以**第一手判定永远是直接轮询 Apple**，发现源只用来找新码。
 
@@ -412,7 +433,7 @@ TG 频道可用（`@testflight` / `@TestFlightApps` 每次各约 15 个 join 码
 
 ```bash
 node build.mjs        # 拼出 dist/worker.js（会检查撞名 + 语法 + export default 唯一）
-node --test           # 116 项测试
+node --test           # 134 项测试
 node bench.mjs        # CPU 基准（回答"10ms 够不够"）
 node cli.mjs selftest # 联网：拿 4 个已知状态的 join 码验证判定
 node cli.mjs find 微信读书   # 联网：试 /find
@@ -420,7 +441,7 @@ node cli.mjs add <链接>     # 联网：试 /add 的元数据自动补齐
 node cli.mjs check    # 联网：真实跑一轮（默认只打印不发）
 ```
 
-测试覆盖（**116 项全过**）：
+测试覆盖（**134 项全过**）：
 
 | 组 | 内容 |
 |---|---|
@@ -468,7 +489,7 @@ dist/worker.js     单文件构建产物 —— 粘进 Cloudflare 控制台的�
 build.mjs          构建（撞名检查 + 语法检查 + export default 唯一性检查）
 bench.mjs          CPU 基准
 cli.mjs            本地调试 CLI（可选，部署不需要）
-test/              116 项测试
+test/              134 项测试
 ```
 
 **逻辑只有一份**：平台差异全部收敛在 `src/worker.js` / `api/*.js` 和 storage 适配器里，
