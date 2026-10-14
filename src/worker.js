@@ -16,12 +16,12 @@
  */
 
 import { loadConfig } from "./config.js";
-import { doRun, handleUpdate, setWebhook, deleteWebhook, health, listChatIds, setBotCommands } from "./runner.js";
+import { doRun, handleUpdate, setWebhook, deleteWebhook, health, listChatIds, setBotCommands, webhookSecret, adminKey } from "./runner.js";
 
 const log = (m) => console.log("[worker] " + m);
 
 function adminOk(env, url) {
-  const key = String(env.ADMIN_KEY || env.TG_WEBHOOK_SECRET || "");
+  const key = adminKey(env);
   if (!key) return false; // 没配 key：拒绝，不默认放行
   const given = url.searchParams.get("key") || "";
   // 定长比较，避免时序侧信道（这里风险很低，但顺手做对）
@@ -58,7 +58,7 @@ export default {
 
     // ── Telegram Webhook ──
     if (request.method === "POST" && (path === "/" || path === "/telegram" || path === "/webhook")) {
-      const secret = String(env.TG_WEBHOOK_SECRET || "");
+      const secret = webhookSecret(env);
       if (secret) {
         const got = request.headers.get("X-Telegram-Bot-Api-Secret-Token") || "";
         if (got !== secret) {
@@ -96,7 +96,7 @@ export default {
       if (!adminOk(env, url)) {
         return text(
           "403：需要 key。用法 /run?key=<ADMIN_KEY>&mode=monitor|discovery|all\n" +
-          "（ADMIN_KEY 没配时会用 TG_WEBHOOK_SECRET；两个都没配则一律拒绝）",
+          "（ADMIN_KEY 与 TG_WEBHOOK_SECRET 两个都没配时，一律拒绝 —— 刻意不留默认放行的后门）",
           403
         );
       }

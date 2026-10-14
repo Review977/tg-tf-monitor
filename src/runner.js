@@ -15,6 +15,19 @@ import {
 import { loadConfig, checkConfig } from "./config.js";
 import { pickStorage } from "./storage.js";
 
+/**
+ * 把"填了但其实是占位"的值当成未配置。
+ *
+ * 为什么需要：Cloudflare 的部署表单会把 `.dev.vars.example` 里每个未注释项都当**必填**，
+ * 于是有人会随手填个 `0` / `TODO` 把表单过了 —— 那样 bot 会把消息发到 chat 0，
+ * 报一个很难懂的错。这里直接识别成"未配置"，并给出可执行的提示。
+ */
+export function isPlaceholder(v) {
+  const s = String(v == null ? "" : v).trim().toLowerCase();
+  return s === "" || s === "0" || s === "-" || s === "todo" || s === "tbd" ||
+    s === "changeme" || s === "placeholder" || s === "none" || s === "null" || s === "x";
+}
+
 function mkLog(prefix) {
   return (msg) => console.log(`[${prefix}] ${msg}`);
 }
@@ -31,6 +44,7 @@ export async function doRun(env = {}, opts = {}) {
   const log = opts.log || mkLog("run");
   const fetchImpl = opts.fetchImpl;
   const cfg = loadConfig(env);
+  if (cfg.telegram && isPlaceholder(cfg.telegram.chatId)) cfg.telegram.chatId = "";
 
   // DRY_RUN 时不强制要 token：很多人的用法是"先验证监控能不能跑通，再去配 bot"。
   // 真部署（非 DRY_RUN）时缺 token 必须报错 —— 否则会静默变成"什么都不发"。
@@ -64,6 +78,7 @@ export async function handleUpdate(env = {}, update, opts = {}) {
   const fetchImpl = opts.fetchImpl;
   try {
     const cfg = loadConfig(env);
+    if (cfg.telegram && isPlaceholder(cfg.telegram.chatId)) cfg.telegram.chatId = "";
     const msg = update.message || update.channel_post || update.edited_message;
     if (!msg) return { ok: true, skipped: "无 message 字段" };
     const text = msg.text || "";
@@ -91,9 +106,32 @@ export async function handleUpdate(env = {}, update, opts = {}) {
 }
 
 /** 把 Telegram 的推送地址指到你的部署。部署后必须跑一次。 */
+/**
+ * Webhook 的 secret_token。
+ *
+ * `TG_WEBHOOK_SECRET` 没配时**回落到 `ADMIN_KEY`** —— 这样部署表单只需要问两个值
+ * （`TG_TOKEN` + `ADMIN_KEY`），少一个必填项，而且**不会出现"两个都没配"的不设防状态**：
+ * 只要配了 ADMIN_KEY，webhook 就有来源校验。
+ */
+export function webhookSecret(env = {}) {
+  return String(env.TG_WEBHOOK_SECRET || env.ADMIN_KEY || "");
+}
+
+/**
+ * 运维端点（`/run` `/set-webhook` `/chat-id` `/set-commands`）比对的 key。
+ *
+ * ⚠️ 优先级和 `webhookSecret()` **正好相反** —— 这两件事各有所属：
+ *   · webhook 头 `X-Telegram-Bot-Api-Secret-Token` 该比 `TG_WEBHOOK_SECRET`
+ *   · URL 里的 `?key=` 该比 `ADMIN_KEY`
+ * 一开始我用同一个函数，结果 `?key=` 被拿去比 `TG_WEBHOOK_SECRET` 了 —— 被测试抓到。
+ */
+export function adminKey(env = {}) {
+  return String(env.ADMIN_KEY || env.TG_WEBHOOK_SECRET || "");
+}
+
 export async function setWebhook(env = {}, url, opts = {}) {
   const cfg = loadConfig(env);
-  const secret = String(env.TG_WEBHOOK_SECRET || "");
+  const secret = webhookSecret(env);
   const params = {
     url,
     allowed_updates: JSON.stringify(["message", "channel_post"]),
@@ -277,11 +315,16 @@ export async function health(env = {}, opts = {}) {
     notes.push("没设 CRON_SECRET：Vercel 的定时触发将没有 Authorization 头，" +
       "只能靠 x-vercel-cron-schedule 头识别（任何伪造该头的请求也能触发）。建议设一个随机 16+ 位。");
   }
-  if (!env.TG_WEBHOOK_SECRET) {
-    notes.push("没设 TG_WEBHOOK_SECRET：Webhook 端点不校验来源，任何人都能伪造 Telegram 推送来触发命令。强烈建议设。");
+  if (!webhookSecret(env)) {
+    notes.push("TG_WEBHOOK_SECRET 与 ADMIN_KEY 都没设：Webhook 端点不校验来源，任何人都能伪造 Telegram 推送来触发命令。");
+  } else if (!env.TG_WEBHOOK_SECRET) {
+    notes.push("没单独设 TG_WEBHOOK_SECRET，已回落到用 ADMIN_KEY 做 Webhook 来源校验（够用；想分开可以再设一个）。");
   }
   if (!env.ADMIN_KEY && !env.TG_WEBHOOK_SECRET) {
-    notes.push("ADMIN_KEY 与 TG_WEBHOOK_SECRET 都没设：运维端点（/run、/set-webhook、/chat-id）一律拒绝，无法使用。");
+    notes.push("ADMIN_KEY 与 TG_WEBHOOK_SECRET 都没设：运维端点（/run、/set-webhook、/chat-id、/set-commands）一律拒绝，无法使用。");
+  }
+  if (isPlaceholder(env.TG_CHAT_ID)) {
+    notes.push("TG_CHAT_ID 还是空的或占位值 —— 先在 TG 里给 bot 发条消息，再打开 /chat-id?key=… 拿数字填进来。");
   }
   if (notes.length) out.notes = notes;
   return out;

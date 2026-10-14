@@ -5,10 +5,10 @@
  * 注册后 TG 输入框旁边那个「/」列表就有全部命令了，不用去 BotFather 手敲。
  */
 
-import { setBotCommands } from "../src/runner.js";
+import { setBotCommands, adminKey } from "../src/runner.js";
 
 function authorized(req) {
-  const key = String(process.env.ADMIN_KEY || process.env.TG_WEBHOOK_SECRET || "");
+  const key = adminKey(process.env);
   if (!key) return false;
   const q = (req.query && req.query.key) || "";
   if (q.length !== key.length) return false;

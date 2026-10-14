@@ -11,7 +11,7 @@
  *   3. 你手动在浏览器打开
  */
 
-import { doRun } from "../src/runner.js";
+import { doRun, adminKey } from "../src/runner.js";
 
 /**
  * 鉴权。三条路，任一成立即放行：
@@ -25,7 +25,7 @@ import { doRun } from "../src/runner.js";
  *      最多是多跑一次、不会重复推送。想要严就设 CRON_SECRET。
  */
 function authorized(req) {
-  const key = String(process.env.ADMIN_KEY || process.env.TG_WEBHOOK_SECRET || "");
+  const key = adminKey(process.env);
   const cronSecret = String(process.env.CRON_SECRET || "");
   const auth = String(req.headers.authorization || "");
   const q = (req.query && req.query.key) || "";

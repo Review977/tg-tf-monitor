@@ -328,6 +328,62 @@ test("api/chat-id：无 key → 403", async () => {
   });
 });
 
+// ───────────────── 密钥优先级 / 占位值（部署表单踩出来的）─────────────────
+
+test("密钥优先级：?key= 比 ADMIN_KEY，Webhook 头比 TG_WEBHOOK_SECRET（两者相反，别串）", async () => {
+  const { adminKey, webhookSecret } = await import("../src/runner.js");
+  const env = { ADMIN_KEY: "A", TG_WEBHOOK_SECRET: "W" };
+  assert.equal(adminKey(env), "A", "运维端点的 key 必须优先 ADMIN_KEY");
+  assert.equal(webhookSecret(env), "W", "Webhook 密钥必须优先 TG_WEBHOOK_SECRET");
+  // 只配一个时两边都要能回落，不能出现"没设防"
+  assert.equal(adminKey({ TG_WEBHOOK_SECRET: "W" }), "W");
+  assert.equal(webhookSecret({ ADMIN_KEY: "A" }), "A", "只配 ADMIN_KEY 时 Webhook 也要有校验");
+  assert.equal(adminKey({}), "");
+  assert.equal(webhookSecret({}), "");
+});
+
+test("只配 ADMIN_KEY 时：?key= 能进，Webhook 也校验（且用的是 ADMIN_KEY）", async () => {
+  await withEnv({ ...BASE_ENV, TG_WEBHOOK_SECRET: undefined }, async () => {
+    const { f, calls } = makeFetchStub();
+    await withFetch(f, async () => {
+      const run = mockRes();
+      await runHandler({ method: "GET", headers: {}, query: { key: "s3cret-key", mode: "monitor" } }, run);
+      assert.equal(run.statusCode, 200, "只配 ADMIN_KEY 时运维端点应能用");
+
+      const setw = mockRes();
+      await setWebhookHandler({ method: "GET", headers: {}, query: { key: "s3cret-key" } }, setw);
+      const p = new URLSearchParams(calls.find((c) => c.url.includes("/setWebhook")).body);
+      assert.equal(p.get("secret_token"), "s3cret-key", "Webhook 密钥应回落到 ADMIN_KEY");
+
+      const tg = mockRes();
+      await telegramHandler(
+        { method: "POST", headers: { "x-telegram-bot-api-secret-token": "s3cret-key" }, body: { message: { text: "/test", chat: { id: -1001234567890 } } } },
+        tg
+      );
+      assert.equal(tg.statusCode, 200, "带 ADMIN_KEY 作为 secret 的推送应被接受");
+    });
+  });
+});
+
+test("isPlaceholder：占位值要被当成未配置（否则会发到 chat 0 报怪错）", async () => {
+  const { isPlaceholder } = await import("../src/runner.js");
+  for (const v of ["", "  ", "0", "-", "TODO", "tbd", "CHANGEME", "none", "null", "X"]) {
+    assert.equal(isPlaceholder(v), true, `${JSON.stringify(v)} 应被判为占位`);
+  }
+  for (const v of ["5551234567", "-1001234567890", "12345"]) {
+    assert.equal(isPlaceholder(v), false, `${JSON.stringify(v)} 是真 chat_id，不该被当成占位`);
+  }
+});
+
+test("TG_CHAT_ID 填了占位值时：明确报错而不是发到错误会话", async () => {
+  await withEnv({ ...BASE_ENV, TG_CHAT_ID: "0" }, async () => {
+    const res = mockRes();
+    await runHandler({ method: "GET", headers: {}, query: { key: "s3cret-key", mode: "monitor" } }, res);
+    assert.equal(res.statusCode, 500);
+    assert.match(String(res.body.error), /TG_CHAT_ID|telegram\.chatId/);
+  });
+});
+
 // ───────────────────────── 命令菜单（setMyCommands）─────────────────────────
 
 test("BOT_COMMANDS 满足 Telegram 对 BotCommand 的硬限制", async () => {

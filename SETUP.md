@@ -63,14 +63,21 @@
 1. 打开本仓库 README，点 **Deploy to Cloudflare** 按钮。
 2. 授权 GitHub —— 它会自动 fork 一份到你账号并建一个 Worker 项目。
 3. 它会读 `wrangler.toml`，**自动创建 KV 命名空间并绑定**（变量名 `STATE`），不用你手填 id。
-4. 它会读 `.dev.vars.example`，**逐条弹出来问你密钥**。这一步填：
+4. 它会读 `.dev.vars.example`，**弹出来问你密钥 —— 只有两项**：
 
-   | 变量 | 这次填什么 |
+   | 变量 | 填什么 |
    |---|---|
    | `TG_TOKEN` | ✅ 第 ① 步拿到的 token |
    | `ADMIN_KEY` | ✅ **随便敲一串随机字符**（例如 `openssl rand -hex 24` 的输出）。拿 chat_id 要用它 |
-   | `TG_WEBHOOK_SECRET` | 可留空（留空则 `ADMIN_KEY` 兼作 webhook 校验）；建议也填一串随机字符 |
-   | `TG_CHAT_ID` | ⬜ **先留空**，第 ③ 步拿到再补。此时还没拿到，别瞎填 |
+
+   > ⚠️ **只有这两项**，是刻意的：Cloudflare 会把 `.dev.vars.example` 里
+   > **每个未注释的项都当必填**。而 `TG_CHAT_ID` 在部署时**根本还不知道**
+   > （要先部署完、再调 `/chat-id` 才能拿到），放进必填就是自相矛盾。
+   > 所以它被注释掉了，第 ③ 步拿到后**去控制台补**：
+   > Worker → `Settings` → `Variables and Secrets` → 加一个 `TG_CHAT_ID`。
+   >
+   > 同理 `TG_WEBHOOK_SECRET` 也是注释掉的：不设就自动回落到用 `ADMIN_KEY`
+   > 做 Webhook 来源校验，够用；想分开再补一个。
 
 5. 部署完成后它会给你一个地址，形如 `https://tg-tf-monitor.<你的子域>.workers.dev`。
    打开它，应该能看到一个自检页，写着「部署顺序」和当前配置状态。
@@ -129,8 +136,11 @@ chat_id: 5551234567        private / 我
 
 | 平台 | 怎么做 |
 |---|---|
-| Cloudflare | 保存变量（会生成新版本）；若没生效就再点一次 Deploy |
-| Vercel | **必须重新部署**（环境变量是部署时注入的） |
+| Cloudflare | 在 `Settings` → `Variables and Secrets` 里**新增** `TG_CHAT_ID`（部署表单里没有这项），保存即可 |
+| Vercel | 在环境变量里加上 `TG_CHAT_ID`，然后**必须重新部署**（环境变量是部署时注入的） |
+
+> 万一你已经在别处填了个占位的 `TG_CHAT_ID`（比如 `0`），程序会把它当成"未配置"
+> 并明确告诉你去拿真值 —— 不会把消息发到 chat 0 然后报一个看不懂的错。
 
 ---
 

@@ -4,10 +4,10 @@
  * 不传 url 就自动用当前请求的域名。
  */
 
-import { setWebhook, deleteWebhook, webhookInfo } from "../src/runner.js";
+import { setWebhook, deleteWebhook, webhookInfo, adminKey } from "../src/runner.js";
 
 function authorized(req) {
-  const key = String(process.env.ADMIN_KEY || process.env.TG_WEBHOOK_SECRET || "");
+  const key = adminKey(process.env);
   if (!key) return false;
   const q = (req.query && req.query.key) || "";
   if (q.length !== key.length) return false;

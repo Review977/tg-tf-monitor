@@ -1,22 +1,30 @@
 # Worker 密钥（dotenv 格式）
 #
-# Cloudflare 的「Deploy to Cloudflare」按钮会读这个文件，
-# 在部署界面上逐条问你 —— 所以这里每一项都要能被人当场填出来，注释就是给他的提示。
+# ⚠️ 重要：Cloudflare 的「Deploy to Cloudflare」部署表单会把本文件里**每个未注释的项
+#    都当成必填**。所以这里只留「部署时确实拿得到」的两项 —— 其余一律用 `#` 注释掉，
+#    既保留说明、又不会卡住部署。
+#
+# 拿到值之后要补的项，去 Worker → Settings → Variables and Secrets 里加。
 
-# @BotFather 发 /newbot 拿到的 token，形如 123456789:AA...
+# ── 部署时必填（就这两项）──
+
+# @BotFather 发 /newbot 拿到的 token，形如 123456789:AAH...
 TG_TOKEN=
 
-# 目标会话 id：群是负数（-100…），私聊是正数。
-# 拿法：先在 TG 里给 bot 发一条消息，再打开
-#   https://<你的worker>.workers.dev/chat-id?key=<ADMIN_KEY>
-# ⚠️ 顺序别反 —— 设了 webhook 之后 getUpdates 会返回空，就查不到了。
-TG_CHAT_ID=
-
-# 随机长串，例如 `openssl rand -hex 24`。两重作用：
-#   1) 作为 Telegram Webhook 的 secret_token，挡住伪造推送
-#   2) 作为 /run、/set-webhook 等运维端点的 key（没配 ADMIN_KEY 时）
-TG_WEBHOOK_SECRET=
-
-# 随机长串，保护运维端点。不填的话会用 TG_WEBHOOK_SECRET；
-# 两个都不填则运维端点一律拒绝（刻意不留默认放行的后门）。
+# 一串随机字符，例如 `openssl rand -hex 24`。它同时干两件事：
+#   1) 保护 /run、/set-webhook、/chat-id、/set-commands 这些运维端点
+#   2) 兼作 Telegram Webhook 的来源校验密钥（没单独设 TG_WEBHOOK_SECRET 时回落到它）
 ADMIN_KEY=
+
+# ── 下面这些部署时还不知道，或可以不填 —— 故意注释掉，别取消注释 ──
+
+# 目标会话 id：群是负数（-100…），私聊是正数。
+# 部署时**根本还不知道**（要先部署完、再调 /chat-id 才能拿到），所以不能放在必填里。
+# 拿到之后：Worker → Settings → Variables and Secrets → 加一个 TG_CHAT_ID。
+# TG_CHAT_ID=
+
+# 想给 Webhook 单独一把密钥（与 ADMIN_KEY 分开）时再设；不设就用 ADMIN_KEY。
+# TG_WEBHOOK_SECRET=
+
+# 覆盖监控对象 / 发现源，整段 JSON，见 src/config.js 的 DEFAULT_CONFIG。
+# CONFIG_JSON=

@@ -86,11 +86,13 @@ Cloudflare 有两条路，**任选一条**：
 
 1. 让你授权 GitHub，然后 **fork 一份到你账号**并建 Worker 项目
 2. 读 `wrangler.toml` → **自动建 KV 并绑定**（变量名 `STATE`）
-3. 读 `.dev.vars.example` → **逐条弹出来问密钥**
-   （`TG_TOKEN`、`TG_CHAT_ID`、`TG_WEBHOOK_SECRET`、`ADMIN_KEY`）
+3. 读 `.dev.vars.example` → **弹出来问密钥，只有两项**：`TG_TOKEN` 和 `ADMIN_KEY`
 
-> ⚠️ 第一次部署时 `TG_CHAT_ID` 还不知道 —— **留空就行**，第 ③ 步拿到再补。
-> 但 `TG_TOKEN` 和 `ADMIN_KEY` **必须填**（拿 chat_id 要用 `ADMIN_KEY`）。
+> ⚠️ **为什么只有两项**：Cloudflare 会把 `.dev.vars.example` 里**每个未注释的项都当必填**，
+> 而 `TG_CHAT_ID` 在部署时**还不知道**（要先部署完、调 `/chat-id` 才能拿到）——
+> 放进必填就自相矛盾、直接卡住部署。所以它和 `TG_WEBHOOK_SECRET` 都被注释掉了：
+> - `TG_CHAT_ID`：第 ③ 步拿到后去 `Settings` → `Variables and Secrets` 补
+> - `TG_WEBHOOK_SECRET`：不设就回落到用 `ADMIN_KEY` 做 Webhook 来源校验，够用
 
 ⚠️ **如果它报红字 `Your GitHub authorization has expired`** —— 那是 Cloudflare 侧的 GitHub 授权过期，
 跟本项目无关。两个选择：
@@ -126,10 +128,10 @@ Worker → `Settings` → `Variables and Secrets`，加这几个（建议都选�
 
 | 变量 | 必填 | 说明 |
 |---|---|---|
-| `TG_TOKEN` | ✅ | @BotFather 发的 token |
-| `TG_CHAT_ID` | ✅ | 目标会话 id（拿法见下） |
-| `TG_WEBHOOK_SECRET` | 强烈建议 | 随机长串，防别人伪造推送 |
-| `ADMIN_KEY` | 强烈建议 | 随机长串，保护 `/run` `/set-webhook` 等运维端点 |
+| `TG_TOKEN` | ✅ 部署时必须 | @BotFather 发的 token |
+| `ADMIN_KEY` | ✅ 部署时必须 | 随机长串。保护 `/run` `/set-webhook` `/chat-id` `/set-commands`，并兼作 Webhook 来源校验 |
+| `TG_CHAT_ID` | ⬜ **部署后再加** | 目标会话 id（拿法见下）。部署时还不知道，所以不在部署表单里 |
+| `TG_WEBHOOK_SECRET` | ⬜ 可选 | 想给 Webhook 单独一把密钥再设；不设则用 `ADMIN_KEY` |
 
 随机串生成：随便敲一长串，或本地跑 `openssl rand -hex 24`。
 

@@ -5,7 +5,7 @@
  * 部署后用 /api/set-webhook?key=… 也可以自动设。
  */
 
-import { handleUpdate } from "../src/runner.js";
+import { handleUpdate, webhookSecret } from "../src/runner.js";
 
 export default async function handler(req, res) {
   if (req.method !== "POST") {
@@ -13,7 +13,7 @@ export default async function handler(req, res) {
     return;
   }
 
-  const secret = String(process.env.TG_WEBHOOK_SECRET || "");
+  const secret = webhookSecret(process.env);
   if (secret) {
     const got = req.headers["x-telegram-bot-api-secret-token"] || "";
     if (got !== secret) {

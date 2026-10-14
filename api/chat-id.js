@@ -6,10 +6,10 @@
  * 所以顺序是：先 /api/chat-id 拿到 chat_id → 填进环境变量 → 再设 webhook。
  */
 
-import { listChatIds } from "../src/runner.js";
+import { listChatIds, adminKey } from "../src/runner.js";
 
 function authorized(req) {
-  const key = String(process.env.ADMIN_KEY || process.env.TG_WEBHOOK_SECRET || "");
+  const key = adminKey(process.env);
   if (!key) return false;
   const q = (req.query && req.query.key) || "";
   if (q.length !== key.length) return false;
