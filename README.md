@@ -512,7 +512,32 @@ test/              116 项测试
 - **「Repository access 设成 All repositories」不会有帮助** —— 仓库权限从来不是变量，令牌才是。
 - 这条路**本身就会时不时失灵**，不是你的配置问题。
 
-### ✅ 修法：只撤销「授权」，别动「安装」
+### ⚠️ 先分清你是哪种情况（打开两个标签页看一眼）
+
+打开 <https://github.com/settings/applications>，**两个标签页分别是什么状态**决定怎么办：
+
+| `Installed GitHub Apps` | `Authorized GitHub Apps` | 含义 | 怎么办 |
+|---|---|---|---|
+| 有 Cloudflare | 有 Cloudflare | 安装与授权都在，授权多半只是过期 | 按下面「只撤销授权」做 |
+| 有 Cloudflare | **没有 Cloudflare** | **只有安装、缺用户授权** —— 用户发起的流程全用不了 | 去 CF 用 **`+ Add account`** 补授权（见下） |
+| 没有 | — | 连安装都没了 | 已有项目的自动部署其实早已断；需重装 App（先确认没有别的项目在用） |
+
+> **为什么会「只有安装、没有授权」**：CF 一开始给你装 App 时，如果没走完
+> "Install **& Authorize**" 的后半段，或者那把用户令牌长期没用被回收，
+> 就会是这个状态。反代这类 Worker 的自动部署走**安装**侧的服务端令牌，
+> 所以它一直正常；而部署按钮、新连仓库这类**用户发起**的流程走**授权**侧，就点不动。
+
+#### 情况「有安装、没授权」的修法：去 CF 补一次授权
+
+1. Cloudflare 控制台 → `Workers & Pages` → `Create application`
+2. 找到 **`Import a repository`** → `Get started`
+3. `Git account` 那里点 **`+ Add account`** → 选你的 GitHub 账号 → **`Install & Authorize`**
+4. 回部署页重试
+
+> 这一步补上用户授权、复用已有安装，**不会卸载任何东西**，
+> 已有 Worker 的自动部署不受影响。
+
+### 情况「有安装、也有授权」的修法：只撤销「授权」，别动「安装」
 
 GitHub 把这两件事**分开**，官方文档写得很清楚：
 

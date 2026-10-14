@@ -67,11 +67,13 @@
    > **原因是 GitHub App 的用户令牌默认 8 小时过期**（GitHub 官方文档），
    > 所以这条按钮路**本身就会时好时坏** —— 同一个按钮第一次能读到仓库、过一会儿就读不到，
    > 跟你的仓库权限没关系（设成 All repositories 也不会改善）。
-   > **修法（不卸载、不影响你已有的 Worker）**：
-   > 打开 <https://github.com/settings/applications> → **`Authorized GitHub Apps`**
-   > → 找到 **Cloudflare Workers and Pages** → **`Revoke`** → 回部署页再点按钮。
-   > 撤销的只是"代你行事"的授权（那把过期令牌），**安装不受影响**，
-   > 你已有 Worker 的构建照常；之后 CF 会重新弹授权页给你一把新令牌。
+   > **修法**：先打开 <https://github.com/settings/applications> 看**两个标签页**：
+   > - `Authorized GitHub Apps` 里有 Cloudflare → **`Revoke`** 它，再点一次按钮
+   > - `Authorized` 里**没有**、但 `Installed` 里有 → 是"缺用户授权"，
+   >   去 CF 控制台 `Create application` → `Import a repository` → **`+ Add account`**
+   >   → `Install & Authorize` 补一次
+   >
+   > 两种都**不卸载**，已有 Worker 的自动部署不受影响。
    > **先别卸载那个 GitHub App** —— 如果你账号里已经有别的 Worker 连着 Git
    > （比如某个反代 Worker），卸载会让它以后不再自动部署。
    >
