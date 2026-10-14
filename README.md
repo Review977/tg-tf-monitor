@@ -512,16 +512,38 @@ test/              116 项测试
 - **「Repository access 设成 All repositories」不会有帮助** —— 仓库权限从来不是变量，令牌才是。
 - 这条路**本身就会时不时失灵**，不是你的配置问题。
 
-### 那怎么办
+### ✅ 修法：只撤销「授权」，别动「安装」
 
-最省事的顺序：
+GitHub 把这两件事**分开**，官方文档写得很清楚：
 
-0. **直接再点一次按钮，并在弹出的 GitHub 授权页上点确认** ——
-   用户令牌过期后，重新走一遍授权就能拿到新的。这一步最便宜，先试它。
-1. 走 [A-2 导入仓库](#a-2-导入仓库用你账号已有的-git-集成推荐)。
-2. 走 [A-3 手工粘贴](#a-3-手工粘贴不依赖-github也不依赖任何-git-集成) ——
-   **它完全不碰 GitHub，所以不受令牌过期影响，一次配好就永久有效。**
-   只部署一次的机器人，这条其实最省心（代价是以后改了要重新粘一次）。
+| | 是什么 | 怎么处理 |
+|---|---|---|
+| **授权**（Authorization） | 让 App **代你行事** —— 就是那把 8 小时过期的 user token | **只撤销它**，可随时重新授权 |
+| **安装**（Installation） | App 能访问哪些仓库 —— 已有 Worker 的构建靠它 | **不要动** |
+
+> 文档原文：*The **authorization** can only be revoked by the person who authorized the
+> GitHub App… However… owners can **uninstall** the GitHub App from the account* ——
+> 两者独立，撤销授权**不会**卸载 App。
+
+**所以按这个顺序做：**
+
+1. 打开 <https://github.com/settings/applications> →
+   **`Authorized GitHub Apps`** 标签页
+2. 找到 **Cloudflare Workers and Pages** → 点 **`Revoke`**
+   （这一步只是把 CF 手里那把过期令牌作废，**安装不受影响**，
+   你已有的 Worker 构建照常）
+3. 回部署页**再点一次按钮** —— 这次 CF 手里没有授权了，
+   它必须让你重新走一遍 GitHub 授权页 → 你就拿到一把**新的 8 小时令牌** → 按钮恢复正常
+4. 如果按钮仍然不弹授权页（CF 可能缓存了账号）：
+   去 `Create application` → `Import a repository` → 点 **`+ Add account`**
+   重新走一次授权（这是 CF 官方文档里的重装步骤里那一步，它本身不卸载）
+
+**或者干脆绕开这条路：**
+
+- [A-2 导入仓库](#a-2-导入仓库用你账号已有的-git-集成推荐) —— 用你账号已有的集成
+- [A-3 手工粘贴](#a-3-手工粘贴不依赖-github也不依赖任何-git-集成) ——
+  **完全不碰 GitHub，不受令牌过期影响，配一次永久有效。**
+  只部署一次的机器人，这条最省心（代价是以后改了要重新粘一次）
 
 > 🛑 **别急着卸载 App。**
 > 官方文档写明：*removing access to GitHub will **disable new builds** for Workers and Pages
@@ -541,8 +563,9 @@ test/              116 项测试
    **Cloudflare Workers and Pages** → `Configure` → **Repository access** 含 `tg-tf-monitor`。
 4. **检查是不是有多个 Cloudflare 账号**：CF 文档明确写过
    *A GitHub account should only point to one Cloudflare account*。
-5. **最后才考虑卸载重装**（官方对 Git integration issues 的标准处置），
-   但**务必先确认没有别的项目在用这个 App**：
+5. **最后才考虑卸载重装**（官方对 Git integration issues 的标准处置）——
+   **优先用上面那个「只撤销授权」的办法，它不会影响已有 Worker**。
+   确实要卸载时，**务必先确认没有别的项目在用这个 App**：
    同一个 `Configure` 页 → `Uninstall "Cloudflare Workers and Pages"` → 回 dash →
    `Create application` → `Pages` → `Connect to Git` → `+ Add account` → `Install & Authorize`。
 
