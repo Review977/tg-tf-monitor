@@ -332,29 +332,47 @@ export function tgSendParams(chatId, text) {
 
 // ─────────────────────────── HTTP ───────────────────────────
 
-async function httpGet(url, { fetchImpl, timeoutMs = 25000, headers = {} } = {}) {
+/**
+ * 这些状态码值得重试：429 是限流、5xx 是对方抖动。
+ *
+ * ⚠️ 为什么特别在意 429：Cloudflare 的出口 IP 是**全平台共享**的，
+ * 而 iTunes 是按 IP 限流的 —— 所以 Worker 调 `itunes.apple.com` 被 429 是常态，
+ * 而同一时刻从自己电脑调同一个接口是好的（实测：本机 3/3 成功）。
+ * 重试能救短时突发；持续限流救不了，所以调用方还要给出可执行的替代方案。
+ */
+const RETRYABLE = new Set([429, 500, 502, 503, 504]);
+
+async function httpGet(url, { fetchImpl, timeoutMs = 25000, headers = {}, retries = 2, retryBaseMs = 350 } = {}) {
   const f = fetchImpl || fetch;
-  const ctl = new AbortController();
-  const timer = setTimeout(() => ctl.abort(), timeoutMs);
-  try {
-    const res = await f(url, {
-      method: "GET",
-      redirect: "follow",
-      signal: ctl.signal,
-      headers: {
-        "User-Agent": UA,
-        Accept: "text/html,application/json,application/xhtml+xml,*/*",
-        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-        ...headers,
-      },
-    });
-    const text = await res.text();
-    return [res.status, text];
-  } catch (e) {
-    return [0, String((e && e.message) || e)];
-  } finally {
-    clearTimeout(timer);
+  let last = [0, "未发起请求"];
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), timeoutMs);
+    try {
+      const res = await f(url, {
+        method: "GET",
+        redirect: "follow",
+        signal: ctl.signal,
+        headers: {
+          "User-Agent": UA,
+          Accept: "text/html,application/json,application/xhtml+xml,*/*",
+          "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+          ...headers,
+        },
+      });
+      const text = await res.text();
+      last = [res.status, text];
+      if (!RETRYABLE.has(res.status) || attempt === retries) return last;
+    } catch (e) {
+      last = [0, String((e && e.message) || e)];
+      if (attempt === retries) return last;
+    } finally {
+      clearTimeout(timer);
+    }
+    // 退避：350ms / 700ms（Worker 里 setTimeout 可用，且 webhook 走 waitUntil 不占响应时间）
+    await new Promise((r) => setTimeout(r, retryBaseMs * (attempt + 1)));
   }
+  return last;
 }
 
 // ─────────────────────────── 探针 ───────────────────────────
@@ -774,6 +792,49 @@ export function renderApps(state) {
  * /find —— 按名字查一个 App 的线索，让用户知道能不能加、加哪个。
  * 三个来源：iTunes（App Store id）、departures.to（轮换检测用）、tfstore（TF 码）
  */
+/**
+ * 按名字把条目分组。
+ *
+ * 为什么需要：同一个 App 在 tfstore / departures 上常有多条记录
+ * （多个 TF 码、多个 app id），平铺出来就是"怎么有这么多"。
+ * 分组后一眼能看出"其实只有两个 App"。
+ */
+export function groupByName(items, nameOf) {
+  const map = new Map();
+  for (const it of items || []) {
+    const k = String(nameOf(it) || "").trim() || "(未命名)";
+    if (!map.has(k)) map.set(k, []);
+    map.get(k).push(it);
+  }
+  return [...map.entries()].map(([name, list]) => ({ name, items: list }));
+}
+
+/**
+ * /find 结果末尾那几句"提醒"。抽成纯函数是为了能直接测 ——
+ * 这几句的价值全在**判断条件**上，而判断条件靠读代码是看不出对错的。
+ *
+ * 两种情况要分开说，因为对用户的意义完全不同：
+ *   1. App Store 里**有**名字正好是这个的，但两个 TF 来源都没有它的码
+ *      -> "它没走公开 TestFlight 分发"（实测：搜「微信」就是这个情况）
+ *   2. 连 App Store 都没有正好同名的 -> 说明搜索是**子串匹配**，别以为漏了
+ */
+export function findHints({ term, itunes = [], tfs = [], deps = [] }) {
+  const t = String(term || "").trim();
+  if (!t) return [];
+  const eq = (n) => String(n || "").trim() === t;
+  const exactItunes = (itunes || []).find((a) => eq(a.trackName));
+  const tfNames = [...(tfs || []).map((x) => x.appName), ...(deps || []).map((x) => x.name)];
+  const exactTf = tfNames.some(eq);
+  const out = [];
+  if (exactItunes && !exactTf) {
+    out.push(`ℹ️ App Store 里有「${esc(t)}」本体（id <code>${esc(exactItunes.trackId)}</code>），` +
+      `但 tfstore / departures 都没有它的公开 TF 链接 —— 说明它没走公开 TestFlight 分发。`);
+  } else if (!exactItunes && !exactTf && tfNames.length) {
+    out.push(`ℹ️ 没有名字正好是「${esc(t)}」的 —— 上面都是名字里<b>含</b>「${esc(t)}」的其他 App。`);
+  }
+  return out;
+}
+
 export async function findApp({ state, query, fetchImpl, log = () => {} }) {
   const term = String(query || "").trim();
   if (!term) return "用法：<code>/find &lt;App 名字或关键词&gt;</code>";
@@ -794,28 +855,41 @@ export async function findApp({ state, query, fetchImpl, log = () => {} }) {
   if (itunes.length) {
     L.push("", "<b>App Store</b>");
     for (const a of itunes.slice(0, 4)) {
-      L.push(`· ${esc(a.trackName)}`);
-      L.push(`  id <code>${esc(a.trackId)}</code>${a.bundleId ? "　bundle <code>" + esc(a.bundleId) + "</code>" : ""}　v${esc(a.version)}`);
+      L.push(`· ${esc(a.trackName)} — id <code>${esc(a.trackId)}</code>${a.bundleId ? "　<code>" + esc(a.bundleId) + "</code>" : ""}`);
+    }
+  } else if (it.error) {
+    L.push("", `App Store：查询失败（${esc(it.error)}）`);
+    // 429 是 Cloudflare 共享出口 IP 被 iTunes 限流 —— 光说"稍后重试"没用，
+    // 得给出**现在就能绕过去**的办法（手动给 id）。
+    if (/429/.test(it.error)) {
+      L.push("<i>iTunes 对 Cloudflare 的共享出口 IP 限流，过一会儿再试通常就好；</i>",
+        "<i>急着加就先不加 id：<code>/add &lt;链接&gt;</code> 照样能盯链接状态，之后补 <code>appstore=&lt;id&gt;</code> 即可。</i>");
     }
   } else {
-    L.push("", it.error ? `App Store：查询失败（${esc(it.error)}），稍后重试` : "App Store：没搜到");
+    L.push("", "App Store：没搜到");
   }
 
-  if (tfs.length) {
+  // ── 同一 App 常有多条记录，先分组再展示，免得看起来"怎么这么多" ──
+  const tfsGroups = groupByName(tfs, (t) => t.appName);
+  if (tfsGroups.length) {
     L.push("", "<b>tfstore 上有 TestFlight 的</b>");
-    for (const t of tfs.slice(0, 5)) {
-      const mark = watched.has(t.code) ? "（已在监控）" : "";
-      L.push(`· ${esc(t.appName)}${mark}`);
-      L.push(`  <code>${esc(t.code)}</code> → 加：<code>/add ${esc(t.code)}</code>`);
+    for (const g of tfsGroups.slice(0, 5)) {
+      const codes = g.items.map((t) => t.code);
+      const marks = g.items.map((t) => (watched.has(t.code) ? "（已在监控）" : ""));
+      L.push(`· ${esc(g.name)}${marks.some(Boolean) ? " " + marks.filter(Boolean).join(" ") : ""}` +
+        (codes.length > 1 ? ` — ${codes.length} 个码` : ""));
+      L.push("  " + codes.map((c) => `<code>/add ${esc(c)}</code>`).join("　"));
     }
   } else {
     L.push("", "tfstore：没有（它只收录一部分 App，不代表没有 TF 版）");
   }
 
-  if (deps.length) {
+  const depGroups = groupByName(deps, (d) => d.name);
+  if (depGroups.length) {
     L.push("", "<b>departures.to 收录的</b>（有它就能自动盯链接轮换）");
-    for (const dp of deps.slice(0, 4)) {
-      L.push(`· ${esc(dp.name)} — app id <code>${esc(dp.appId)}</code>`);
+    for (const g of depGroups.slice(0, 5)) {
+      const ids = g.items.map((d) => d.appId);
+      L.push(`· ${esc(g.name)} — app id ${ids.map((i) => "<code>" + esc(i) + "</code>").join("、")}`);
     }
   } else {
     L.push("", dp.error
@@ -823,9 +897,11 @@ export async function findApp({ state, query, fetchImpl, log = () => {} }) {
       : "departures.to：没收录（不影响状态监控，只是少一层轮换检测）");
   }
 
+  for (const note of findHints({ term, itunes, tfs, deps })) L.push("", `<i>${note}</i>`);
+
   L.push("", "<b>怎么加</b>",
-    "· 已经有 TestFlight 链接 → <code>/add &lt;链接&gt;</code>（App Store id 与 departures id 会自动补齐）",
-    "· 想手动指定 → <code>/add &lt;链接&gt; 名称 appstore=&lt;id&gt; departures=&lt;id&gt;</code>");
+    "· 点上面的 <code>/add &lt;码&gt;</code> 直接加（App Store id 与 departures id 会自动补齐）",
+    "· 要手动指定 → <code>/add &lt;链接&gt; 名称 appstore=&lt;id&gt; departures=&lt;id&gt;</code>");
   return L.join("\n");
 }
 

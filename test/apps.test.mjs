@@ -507,6 +507,86 @@ test("⭐ 回归：KV 里存着旧版 `… UTC` 时，/status 也不能再出现
   assert.match(out, /状态已保持 \d+ (分钟|小时|天)/, "stateSince 也要解析对");
 });
 
+test("groupByName：同一 App 的多条记录要并到一起（否则看着像「怎么这么多」）", async () => {
+  const { groupByName } = await import("../src/core.js");
+  const g = groupByName(
+    [{ appName: "微信读书", code: "a" }, { appName: "微信输入法", code: "b" },
+     { appName: "微信读书", code: "c" }, { appName: "", code: "d" }],
+    (x) => x.appName
+  );
+  assert.deepEqual(g.map((x) => x.name), ["微信读书", "微信输入法", "(未命名)"]);
+  assert.equal(g[0].items.length, 2, "同名要并成一组");
+  assert.equal(g[1].items.length, 1);
+  assert.equal(groupByName([], (x) => x.n).length, 0);
+});
+
+test("/find：429 要给**现在就能用**的办法，不能只说「稍后重试」", async () => {
+  const { findApp, normalizeState } = await import("../src/core.js");
+  const fakeFetch = async (url) => {
+    if (String(url).includes("itunes.apple.com")) {
+      return new Response("rate limited", { status: 429 });
+    }
+    return new Response("<html></html>", { status: 200 });
+  };
+  const out = await findApp({ state: normalizeState({}), query: "微信", fetchImpl: fakeFetch });
+  assert.match(out, /HTTP 429/);
+  assert.match(out, /Cloudflare 的共享出口 IP 限流/, "要说清为什么会 429（不是我们写错了）");
+  assert.match(out, /appstore=&lt;id&gt;|appstore=<id>/, "要给出绕过办法");
+  assert.match(out, /照样能盯链接状态/, "要说清不加 id 也能用，别让人以为必须等");
+});
+
+test("findHints：App Store 有本体但没公开 TF 链接时，要明说（这就是搜「微信」的真实情形）", async () => {
+  const { findHints } = await import("../src/core.js");
+  const notes = findHints({
+    term: "微信",
+    itunes: [{ trackName: "微信", trackId: 414478124 }],
+    tfs: [{ appName: "微信读书" }, { appName: "微信输入法" }],
+    deps: [{ name: "微信读书" }],
+  });
+  assert.equal(notes.length, 1);
+  assert.match(notes[0], /App Store 里有「微信」本体/);
+  assert.match(notes[0], /414478124/, "要把 id 给出来");
+  assert.match(notes[0], /没走公开 TestFlight 分发/, "要给出结论，而不是让用户自己猜");
+});
+
+test("findHints：连 App Store 都没有正好同名时，说明是子串匹配", async () => {
+  const { findHints } = await import("../src/core.js");
+  const notes = findHints({
+    term: "微信",
+    itunes: [{ trackName: "微信读书", trackId: 1 }],
+    tfs: [{ appName: "微信读书" }],
+  });
+  assert.match(notes[0], /没有名字正好是「微信」的/);
+  assert.match(notes[0], /含/);
+});
+
+test("findHints：有精确同名时不该多嘴", async () => {
+  const { findHints } = await import("../src/core.js");
+  assert.deepEqual(findHints({ term: "微信读书", itunes: [{ trackName: "微信读书", trackId: 1 }], tfs: [{ appName: "微信读书" }] }), []);
+  assert.deepEqual(findHints({ term: "", itunes: [{ trackName: "x" }] }), []);
+  assert.deepEqual(findHints({ term: "微信" }), [], "什么都没搜到时不乱说");
+});
+
+test("/find：搜的是子串，没有精确同名时要明说（省得以为漏了）", async () => {
+  const { findApp, normalizeState } = await import("../src/core.js");
+  const body = JSON.stringify({ "@type": "ItemList", itemListElement: [
+    { "@type": "SoftwareApplication", name: "微信读书", url: "https://tfstore.top/zh-CN/apps/5MWjLpYl" },
+    { "@type": "SoftwareApplication", name: "微信输入法", url: "https://tfstore.top/zh-CN/apps/iSTXkF4K" },
+  ] });
+  const fakeFetch = async (url) => {
+    const u = String(url);
+    if (u.includes("itunes.apple.com")) return new Response("x", { status: 429 });
+    if (u.includes("tfstore.top")) {
+      return new Response('<script type="application/ld+json">' + body + "</script>", { status: 200 });
+    }
+    return new Response("<html></html>", { status: 200 });
+  };
+  const out = await findApp({ state: normalizeState({}), query: "微信", fetchImpl: fakeFetch });
+  assert.match(out, /没有名字正好是「微信」的/, "要说明是子串匹配，不是漏了");
+  assert.match(out, /微信读书/);
+  assert.match(out, /2 个码|微信输入法/, "tfstore 结果要在");
+});
+
 test("列表按加入时间排（先加的在前）；中文不能靠码点当字典序", async () => {
   const { renderApps, normalizeState } = await import("../src/core.js");
   const out = renderApps(normalizeState({
