@@ -191,6 +191,8 @@ Worker → `Settings` → `Variables and Secrets`，加这几个（建议都选�
 > 或者 `UTC_OFFSET_MINUTES`（固定偏移，如 `480`）。
 > `Intl` 时区数据不可用时会**自动退回固定偏移**，宁可少一点夏令时支持，也不会把时间显示错。
 > `/status` 抬头会标明当前用的时区。
+> 存储里一律是 **UTC 时间点**（ISO），显示时才转成配置的时区 ——
+> 所以改时区、或读到旧版本写下的数据，显示都不会错乱。
 
 随机串生成：随便敲一长串，或本地跑 `openssl rand -hex 24`。
 
@@ -676,6 +678,15 @@ Cloudflare 的 GitHub 授权过期了，与本项目无关。要么去
 
 > 💡 没配 `TG_CHAT_ID` 时，bot 会**主动回你一条诊断**并附上它看到的 chat_id，
 > 不会像以前那样静默什么都不发。
+
+**`/status` 里的「上次监控」一直不动**（自动监控没跑）
+Cron 没生效。去 Worker → `Settings` → `Triggers` → **`Cron Triggers`** 看那两条在不在：
+`*/30 * * * *` 和 `0 */6 * * *`。不在就手动加上。
+（走 A-3 手工粘贴那条路的话**必须手动加**；走 A-2 导入仓库的话由 `wrangler.jsonc`
+里的 `triggers.crons` 带上去，正常会自动有。）
+
+想立刻确认整条链路通不通，可以先手动跑一轮：
+`https://<你的worker>.workers.dev/run?key=<ADMIN_KEY>` —— 跑完 `/status` 的「上次监控」应该变成刚刚。
 
 **TG 里发命令没反应** → 九成是没设 webhook，或设错了地址。
 打开 `/` 或 `/health` 看 `webhook.url`；用 `/set-webhook?key=…` 重设。

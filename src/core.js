@@ -365,7 +365,7 @@ export async function probeJoin(code, opts = {}) {
   const out = parseJoinPage(text, st, st === 0 ? text : "");
   out.code = code;
   out.url = url;
-  out.checkedAt = nowStr();
+  out.checkedAt = nowStamp();
   return out;
 }
 
@@ -732,7 +732,7 @@ export function renderApps(state) {
     }
     if (r.desc) L.push(`   公测页测试说明：${esc(r.desc.slice(0, 120))}`);
     if (r.keywords && r.keywords.length) L.push(`   发现关键词：${esc(r.keywords.slice(0, 4).join(" / "))}`);
-    L.push(`   加入：${esc(r.firstSeen || "?")}｜来源：${esc((r.sources || []).join(","))}`);
+    L.push(`   加入：${esc(fmtStamp(r.firstSeen) || "?")}｜来源：${esc((r.sources || []).join(","))}`);
   });
   L.push("", "加：<code>/add &lt;TestFlight链接&gt;</code>　找：<code>/find &lt;名字&gt;</code>　删：<code>/del &lt;码&gt;</code>");
   return L.join("\n");
@@ -936,6 +936,43 @@ function offsetLabel(minutes) {
  * 时区标签，给 /status 抬头用。
  * **只报告实际生效的那个**：名字可用就报名字（附它此刻的真实偏移），否则报固定偏移。
  */
+/**
+ * **存储**用的时间戳：ISO 8601 UTC（秒级）。
+ *
+ * 为什么存储不存"显示串"：显示串里带了时区（或者干脆没带、取决于当时的配置），
+ * 一旦改时区、或者读到旧版本写下的数据，显示就会错乱 —— 实测就踩到了：
+ * 抬头写着"时间均为 Asia/Shanghai（UTC+8）"，下面每一行却还是旧的 `08:18 UTC`。
+ * 内部一律存 UTC 时间点、显示时才转时区，这类自相矛盾就不可能发生。
+ */
+export function nowStamp(d = new Date()) {
+  return d.toISOString().replace(/\.\d{3}Z$/, "Z");
+}
+
+const ISO_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?(\.\d+)?(Z|[+-]\d{2}:?\d{2})$/;
+const LEGACY_UTC_RE = /^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2})(?::(\d{2}))? UTC$/;
+
+/**
+ * 把**存储里的**时间戳渲染成当前时区的显示值。必须兼容三种历史形态：
+ *   1. ISO 8601（本版本起）：`2026-10-14T08:18:00Z`  -> 按时区渲染
+ *   2. 旧版 UTC 显示串：`2026-10-14 08:18 UTC`       -> 当 UTC 解析后按时区渲染
+ *   3. 旧版本地显示串：`2026-10-14 16:18`（无标记）  -> 已是显示值，原样返回
+ * 认不出来的一律原样返回（"从未"、"?" 这类要能穿过去）。
+ */
+export function fmtStamp(v) {
+  const raw = String(v == null ? "" : v).trim();
+  if (!raw) return "";
+  if (ISO_RE.test(raw)) {
+    const t = Date.parse(raw);
+    if (Number.isFinite(t)) return nowStr(new Date(t));
+  }
+  const m = raw.match(LEGACY_UTC_RE);
+  if (m) {
+    const t = Date.parse(`${m[1]}T${m[2]}:${m[3] || "00"}Z`);
+    if (Number.isFinite(t)) return nowStr(new Date(t));
+  }
+  return raw;
+}
+
 export function tzLabel(d = new Date()) {
   const { name, offsetMinutes, usable } = DISPLAY_TZ;
   if (usable) {
@@ -1054,7 +1091,7 @@ export async function runMonitor({ cfg, state, notifier, log = () => {}, fetchIm
 
   for (const [code, meta] of Object.entries(targets).sort()) {
     const rec = (state.links[code] = state.links[code] || {});
-    if (!rec.firstSeen) rec.firstSeen = nowStr();
+    if (!rec.firstSeen) rec.firstSeen = nowStamp();
     if (!rec.label) rec.label = meta.label;
     if (!rec.sources) rec.sources = ["manual"];
     if (meta.appStoreId) rec.appStoreId = meta.appStoreId;
@@ -1073,7 +1110,7 @@ export async function runMonitor({ cfg, state, notifier, log = () => {}, fetchIm
     log(`  ${code} → ${STATE_LABEL[info.state] || info.state}${info.error ? "  (" + info.error + ")" : ""}`);
 
     if (oldState !== info.state) {
-      rec.stateSince = nowStr();
+      rec.stateSince = nowStamp();
       if (oldState !== undefined || info.state !== "open") {
         const msg = [
           `<b>${esc(rec.label || code)} TF 链接状态变化</b>`,
@@ -1111,7 +1148,7 @@ export async function runMonitor({ cfg, state, notifier, log = () => {}, fetchIm
     const depId = rec.departuresId;
     if (depId && cfg.discovery && cfg.discovery.useDepartures !== false) {
       const dep = await probeDepartures(depId, { fetchImpl });
-      rec.departures = { status: dep.status, url: dep.url, checkedAt: nowStr() };
+      rec.departures = { status: dep.status, url: dep.url, checkedAt: nowStamp() };
       if (!dep.code) {
         log(`  ⚠️ departures.to app ${depId} 没取到 join 码：${dep.error || "页面里没有 url 字段"}`);
       } else if (dep.code !== code) {
@@ -1138,7 +1175,7 @@ export async function runMonitor({ cfg, state, notifier, log = () => {}, fetchIm
       continue;
     }
     const old = state.appstore[String(aid)] || {};
-    state.appstore[String(aid)] = { version: cur.version, checkedAt: nowStr(), name: cur.name, releaseDate: cur.releaseDate || "" };
+    state.appstore[String(aid)] = { version: cur.version, checkedAt: nowStamp(), name: cur.name, releaseDate: cur.releaseDate || "" };
     if (old.version && old.version !== cur.version) {
       const msg = [
         `<b>App Store 正式版更新</b>：${esc(cur.name)}`,
@@ -1155,7 +1192,7 @@ export async function runMonitor({ cfg, state, notifier, log = () => {}, fetchIm
     }
   }
 
-  state.meta.lastCheck = nowStr();
+  state.meta.lastCheck = nowStamp();
   log(`本轮结束，产生 ${events} 条事件。`);
   return events;
 }
@@ -1169,7 +1206,7 @@ export async function registerDiscovery({ cfg, state, notifier, log = () => {}, 
 
   const info = await probeJoin(code, { fetchImpl });
   item.state = info.state;
-  item.foundAt = nowStr();
+  item.foundAt = nowStamp();
   item.appName = item.appName || info.appName || info.title || "";
   state.discoveries[code] = item;
 
@@ -1180,11 +1217,11 @@ export async function registerDiscovery({ cfg, state, notifier, log = () => {}, 
   if (watched) {
     const rec = (state.links[code] = state.links[code] || {});
     Object.assign(rec, {
-      label: item.appName || code, firstSeen: nowStr(), sources: [item.source],
+      label: item.appName || code, firstSeen: nowStamp(), sources: [item.source],
       state: info.state, url: info.url, appName: info.appName, desc: info.desc,
       descHash: info.descHash, lastChecked: info.checkedAt,
     });
-    if (!rec.stateSince) rec.stateSince = nowStr();
+    if (!rec.stateSince) rec.stateSince = nowStamp();
   }
 
   const msg = [
@@ -1324,7 +1361,7 @@ export async function runDiscovery({ cfg, state, notifier, log = () => {}, fetch
     state.meta.discoveryCursor = (idx + 1) % sources.length;
   }
 
-  state.meta.lastScan = nowStr();
+  state.meta.lastScan = nowStamp();
   log(`发现扫描结束，新增 ${events} 条。`);
   return events;
 }
@@ -1334,8 +1371,8 @@ export async function runDiscovery({ cfg, state, notifier, log = () => {}, fetch
 export function renderStatus(cfg, state) {
   const L = ["<b>tg-tf-monitor 当前状态</b>",
     `<i>时间均为 ${esc(tzLabel())}</i>`,
-    `上次监控：${esc(state.meta.lastCheck || "从未")}`,
-    `上次发现扫描：${esc(state.meta.lastScan || "从未")}`, ""];
+    `上次监控：${esc(fmtStamp(state.meta.lastCheck) || "从未")}`,
+    `上次发现扫描：${esc(fmtStamp(state.meta.lastScan) || "从未")}`, ""];
   const codes = Object.keys(state.links || {});
   if (!codes.length) L.push("（监控列表为空，检查配置里的 watch）");
   for (const code of codes.sort()) {
@@ -1343,14 +1380,14 @@ export function renderStatus(cfg, state) {
     L.push(`· <b>${esc(rec.label || code)}</b> ${STATE_LABEL[rec.state] || rec.state || "未检查"}`);
     L.push(`  <code>${esc(code)}</code>`);
     L.push(`  ${esc(rec.url || "https://testflight.apple.com/join/" + code)}`);
-    if (rec.stateSince) L.push(`  状态自 ${esc(rec.stateSince)} 起`);
-    if (rec.lastChecked) L.push(`  上次检查 ${esc(rec.lastChecked)}`);
+    if (rec.stateSince) L.push(`  状态自 ${esc(fmtStamp(rec.stateSince))} 起`);
+    if (rec.lastChecked) L.push(`  上次检查 ${esc(fmtStamp(rec.lastChecked))}`);
     if (rec.desc) L.push(`  公测页测试说明：${esc(rec.desc.slice(0, 160))}`);
     if (rec.departures && rec.departures.status) L.push(`  departures.to 认为：${esc(rec.departures.status)}`);
     if (rec.lastError) L.push(`  ⚠️ ${esc(rec.lastError)}`);
   }
   for (const [aid, a] of Object.entries(state.appstore || {})) {
-    L.push(`· App Store 正式版（id ${esc(aid)}）：${esc(a.version || "?")}（检查于 ${esc(a.checkedAt || "?")}）`);
+    L.push(`· App Store 正式版（id ${esc(aid)}）：${esc(a.version || "?")}（检查于 ${esc(fmtStamp(a.checkedAt) || "?")}）`);
   }
   // 把"拿不到什么"直接写在消息里，免得每次都要重新疑惑一遍
   L.push("", "<i>TF 构建号（TestFlight 里的版本/build）：Apple 不公开，公测页上也没有 —— " +
@@ -1481,7 +1518,7 @@ export async function handleCommand({ cfg, state, notifier, text, chatId, log = 
     Object.assign(rec, {
       label: givenName || e.appName || code,
       appName: e.appName || rec.appName || "",
-      firstSeen: rec.firstSeen || nowStr(),
+      firstSeen: rec.firstSeen || nowStamp(),
       sources: [...new Set([...(rec.sources || []), "manual"])],
       state: e.state, url: e.url, desc: e.desc, descHash: e.descHash, lastChecked: e.checkedAt,
       keywords: e.keywords || [],
@@ -1492,7 +1529,7 @@ export async function handleCommand({ cfg, state, notifier, text, chatId, log = 
     else if (e.bundleId) rec.bundleId = e.bundleId;
     if (opts.departures) { rec.departuresId = /^\d+$/.test(opts.departures) ? Number(opts.departures) : opts.departures; rec.departuresSource = "manual"; }
     else if (e.departuresId) { rec.departuresId = e.departuresId; rec.departuresSource = "auto"; }
-    if (!rec.stateSince) rec.stateSince = nowStr();
+    if (!rec.stateSince) rec.stateSince = nowStamp();
 
     const L = [
       `✅ 已加入监控：<b>${esc(rec.label)}</b>`,

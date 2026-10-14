@@ -448,6 +448,58 @@ test("/status 抬头标注了时区（不然用户不知道看到的是哪个时
   assert.match(out, /Asia\/Shanghai/);
 });
 
+test("nowStamp：存储用 ISO UTC（不带毫秒）", async () => {
+  const { nowStamp } = await import("../src/core.js");
+  assert.equal(nowStamp(new Date("2026-10-14T08:18:00Z")), "2026-10-14T08:18:00Z");
+  assert.equal(nowStamp(new Date("2026-10-14T08:18:00.123Z")), "2026-10-14T08:18:00Z");
+});
+
+test("fmtStamp：三种历史形态都要处理对（ISO / 旧版 UTC 串 / 旧版本地串）", async () => {
+  const { fmtStamp, setDisplayTimeZone } = await import("../src/core.js");
+  setDisplayTimeZone("Asia/Shanghai", 480);
+
+  // 1) 本版本起：ISO UTC -> 转成 +8
+  assert.equal(fmtStamp("2026-10-14T08:18:00Z"), "2026-10-14 16:18");
+  // 2) 旧版本写下的 UTC 显示串 -> 也要转成 +8（否则抬头说本地、行里却是 UTC）
+  assert.equal(fmtStamp("2026-10-14 08:18 UTC"), "2026-10-14 16:18");
+  assert.equal(fmtStamp("2026-10-14 08:17 UTC"), "2026-10-14 16:17");
+  // 3) 旧版本写下的本地串（无标记）-> 已是显示值，原样返回，别二次偏移
+  assert.equal(fmtStamp("2026-10-14 16:18"), "2026-10-14 16:18");
+  // 4) 非时间值要能穿过（"从未" / "?" / 空）
+  for (const v of ["从未", "?", "", null, undefined, "刚刚"]) {
+    assert.equal(fmtStamp(v), v == null ? "" : v, `${JSON.stringify(v)} 应原样返回`);
+  }
+});
+
+test("⭐ 回归：KV 里存着旧版 `… UTC` 时，/status 也不能再出现 UTC 字样", async () => {
+  // 这正是老板实测到的自相矛盾：抬头写"时间均为 Asia/Shanghai（UTC+8）"，
+  // 下面每一行却还是 `08:18 UTC`。旧值不会被重写（比如 firstSeen 是历史记录），
+  // 所以必须在**显示时**转换。
+  const { renderStatus, normalizeState, setDisplayTimeZone } = await import("../src/core.js");
+  setDisplayTimeZone("Asia/Shanghai", 480);
+  const out = renderStatus({}, normalizeState({
+    meta: { lastCheck: "2026-10-14 08:18 UTC", lastScan: "2026-10-14 08:18 UTC" },
+    links: { abcdef: { label: "某App", state: "open", stateSince: "2026-10-14 08:18 UTC",
+                       lastChecked: "2026-10-14 08:18 UTC", firstSeen: "2026-10-14 08:17 UTC" } },
+    appstore: { "1": { version: "1.0", checkedAt: "2026-10-14 08:18 UTC" } },
+  }));
+  assert.ok(!/UTC(?!\+)/.test(out.replace(/UTC\+8/g, "")), "除抬头的 UTC+8 外不该再出现 UTC：\n" + out);
+  assert.match(out, /上次监控：2026-10-14 16:18/, "旧值应被换算成 +8 显示");
+  assert.match(out, /状态自 2026-10-14 16:18 起/, "stateSince 也要换算");
+  assert.match(out, /检查于 2026-10-14 16:18/, "appstore.checkedAt 也要换算");
+  // 注：firstSeen（"加入："那行）显示在 /apps 里，不在 /status —— 由下一条测试覆盖
+});
+
+test("⭐ 回归：/apps 里的「加入」时间同样要换算", async () => {
+  const { renderApps, normalizeState, setDisplayTimeZone } = await import("../src/core.js");
+  setDisplayTimeZone("Asia/Shanghai", 480);
+  const out = renderApps(normalizeState({
+    links: { abcdef: { label: "某App", state: "open", firstSeen: "2026-10-14 08:17 UTC", sources: ["manual"] } },
+  }));
+  assert.match(out, /加入：2026-10-14 16:17/);
+  assert.ok(!/UTC/.test(out), "不该出现 UTC：" + out);
+});
+
 // ───────────────────── 发送前的消息安全仍然成立 ─────────────────────
 
 test("新增的 /apps、/find 输出都能过 Telegram 的 HTML 校验", async () => {
