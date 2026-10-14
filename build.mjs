@@ -16,6 +16,7 @@
  */
 
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -76,6 +77,8 @@ if (dupes.length) {
   process.exit(1);
 }
 
+const srcHash = createHash("sha256").update(sources.map((s) => s.src).join("\n")).digest("hex").slice(0, 16);
+
 const header = `/**
  * tg-tf-monitor-cloud —— 单文件构建产物，请勿直接编辑
  *
@@ -85,7 +88,9 @@ ${ORDER.map((f) => " *   - " + f).join("\n")}
  * 用法：整个文件贴进 Cloudflare 控制台的 Worker 编辑器即可。
  * 该产物已被 test/handler.test.mjs 实际 import 并跑过断言。
  *
- * 构建时间：${new Date().toISOString()}
+ * 源码指纹（sha256 前 16 位）：${srcHash}
+ * ⚠️ 这里刻意**不放构建时间** —— 放了构建就不可复现，
+ *    CI 里"产物必须与源码同步"那条检查会永远失败（这是被 CI 抓出来的）。
  */
 
 `;
