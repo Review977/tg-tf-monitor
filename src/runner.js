@@ -11,7 +11,7 @@
 
 import {
   makeNotifier, runMonitor, runDiscovery, handleCommand, tgCall, tgPrepare,
-  setDisplayTimeZone, esc, tgSendParams,
+  setDisplayTimeZone, esc, tgSendParams, FEATURES,
 } from "./core.js";
 import { loadConfig, checkConfig } from "./config.js";
 import { pickStorage } from "./storage.js";
@@ -296,7 +296,7 @@ export async function listChatIds(env = {}, opts = {}) {
  * 用 GET /health 就能看，省得在平台日志里翻。
  */
 export async function health(env = {}, opts = {}) {
-  const out = { ok: true, checks: {} };
+  const out = { ok: true, features: FEATURES, checks: {} };
   let cfg;
   try {
     cfg = loadConfig(env);

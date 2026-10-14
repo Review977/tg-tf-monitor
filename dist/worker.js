@@ -11,7 +11,7 @@
  * 用法：整个文件贴进 Cloudflare 控制台的 Worker 编辑器即可。
  * 该产物已被 test/handler.test.mjs 实际 import 并跑过断言。
  *
- * 源码指纹（sha256 前 16 位）：002e84664d3ec234
+ * 源码指纹（sha256 前 16 位）：bd6c76ab368dd4b9
  * ⚠️ 这里刻意**不放构建时间** —— 放了构建就不可复现，
  *    CI 里"产物必须与源码同步"那条检查会永远失败（这是被 CI 抓出来的）。
  */
@@ -1088,6 +1088,22 @@ function wishMatches(rec, foundName, foundCode) {
   return cands.some((c) => a === c || a.includes(c) || c.includes(a));
 }
 
+/**
+ * 这个版本具备的功能标签。
+ *
+ * 为什么要它：我们反复遇到"改了但不确定部署上没有"—— 用户看到的旧行为可能是
+ * ①没部署成功 ②部署了但依赖的外部接口挂了。**有一个可查的标记就不用猜了。**
+ * 加新功能时顺手往这里补一条。
+ */
+const FEATURES = [
+  "app-level-watch",     // /add <名字> 没链接也能加
+  "joined-mute",         // /joined 静音状态来回，但新链接仍提醒
+  "dep-add",             // /add dep=<id>
+  "name-decision-offline", // /add 的"加哪个 App"不依赖 iTunes（429 也不影响）
+  "tz-local",            // 时间按配置时区显示
+  "human-time",          // 相对时间（3 分钟前）
+];
+
 /** 关键词 = 全局配置 ∪ 各在监控 App 派生的（新加的 App 才会被 /scan 捞到） */
 function effectiveKeywords(cfg, state) {
   const set = new Set(cfg.keywords || []);
@@ -1980,38 +1996,30 @@ async function handleCommand({ cfg, state, notifier, text, chatId, log = () => {
       await notifier.send(`正在按名字找「${esc(name)}」的 TestFlight 链接…`);
       const look = await lookupByName({ term: name, fetchImpl, log });
 
-      // ⭐ App Store 里名字**正好是它**的 App —— 这是"用户想加的是哪个 App"最强的信号。
-      //
-      // 为什么必须先看它：`/add 微信` 时，tfstore/departures 里只有「微信读书」「微信输入法」，
-      // 于是"精确同名"匹配失败、退回"名字里含微信"，最后被判成"有歧义"而**拒绝** ——
-      // 列了一堆候选，却**唯独不提用户要加的微信本身**（它只是没有公开 TF 链接而已）。
       const lowName = name.toLowerCase();
-      const exactApp = (look.itunes || [])
-        .find((a) => String(a.trackName || "").trim().toLowerCase() === lowName);
-      const partialGroups = matchAppsByName(look.merged, name);
-      let groups = partialGroups;
-      if (exactApp) {
-        // 只认**名字完全相等**的链接条目。
-        // ⚠️ 这里不能用 includes —— 「微信读书」「微信输入法」都"包含"微信，
-        // 用 includes 筛等于没筛（我第一版就是这么写错的，测出来还是 2 组）。
-        // App Store 里那个精确同名的 App 定义了"身份"，TF 条目必须同名才算同一个 App。
-        const mine = look.merged.filter((m) => String(m.appName || "").trim().toLowerCase() === lowName);
-        groups = mine.length ? groupByName(mine, (x) => x.appName) : [];
-      }
+      // ⭐ 决策只看一件事：**TF 条目里有没有名字完全相等的**。
+      //
+      // ⚠️ 为什么不能把决策挂在 iTunes 上（我第一版就是这么写的，然后又被实测打回）：
+      // Cloudflare 的出口 IP 是全平台共享的，iTunes 按 IP 限流，所以 Worker 上 iTunes
+      // 经常 429。一旦它失败，"App Store 里有没有精确同名"就查不出来，逻辑退回
+      // "名字里含关键词" —— `/add 微信` 于是又变成列「微信读书/微信输入法」并拒绝。
+      // **决策必须建立在最稳的来源上**：tfstore/departures 的 app 名。
+      const exactGroups = groupByName(
+        look.merged.filter((m) => String(m.appName || "").trim().toLowerCase() === lowName),
+        (x) => x.appName
+      );
+      // 近似候选只用于"顺便说一句"，**不参与决策**
+      const nearGroups = matchAppsByName(look.merged, name)
+        .filter((g) => String(g.name || "").trim().toLowerCase() !== lowName);
 
-      if (!groups.length) {
-        // ⭐ 没有可用链接也**照样加进监控** —— 这就是「App 级监控」。
-        // 现在没有链接不代表以后没有：等发现源里出现可加入的链接时再提醒。
-        // 不能只认"名字完全相等" —— iTunes 里的名字常带后缀
-        // （「高德地图-北斗卫星无网导航…」），完全相等会一条都匹配不上。
-        // 用和 enrichApp 同一套 nameMatch 打分，认不准就不填 id（同一条纪律）。
+      if (!exactGroups.length) {
+        // ⭐ 没有名字完全相等的链接 -> **照样加进监控**（App 级监控）。
+        // 用户说"加微信"就是想盯微信；至于它现在有没有公开 TF 链接，那是另一回事。
         const auto = bestItunesHit(look.itunes || [], name);
-        const bestIt = exactApp || auto.hit;
-        const itScore = exactApp ? 3 : auto.score;
-        // 标签用**用户输入的名字**（简短、他自己认得），iTunes 的完整名放附注里
-        const label = name;
+        const bestIt = auto.hit;                    // iTunes 只用来补 id/bundle，可有可无
+        const itScore = auto.score;
+        const label = name;                         // 标签用用户输入的名字，iTunes 的完整名放附注
         const appStoreName = bestIt ? bestIt.trackName : "";
-        // 同一个 App 已经建过愿望就用回原来的 key，别建出两条
         const existing = Object.entries(state.links).find(([, r]) =>
           r.kind === "app" && String(r.label || "").trim() === label.trim());
         const key = existing ? existing[0] : ("app:" + (bestIt && bestIt.trackId ? bestIt.trackId : label));
@@ -2033,34 +2041,23 @@ async function handleCommand({ cfg, state, notifier, text, chatId, log = () => {
           `✅ 已加入监控（App 级）：<b>${esc(label)}</b>`,
           bestIt ? `App Store：${esc(bestIt.trackId)}${bestIt.bundleId ? "（" + esc(bestIt.bundleId) + "）" : ""}` : "",
           "",
-          "现在**还没有可加入的公开 TF 链接** —— 但我记住了这个 App：",
+          "现在**还没有名字对得上的公开 TF 链接** —— 但我记住了这个 App：",
           "· 每轮 <code>/scan</code> 会按它的名字去 tfstore / departures / 搜索引擎找",
           "· **一旦出现能加入的链接，我会主动告诉你**",
           "· 也可以随时 <code>/find " + esc(name.slice(0, 20)) + "</code> 手动查一次",
           (bestIt && itScore < 3) ? `<i>App Store 匹配到的是：${esc(appStoreName)}（近似名匹配，不确定就核对一下）</i>` : "",
-          // 精确同名时，顺手提一句"名字里含它的其它 App" —— 用户可能其实想加那些
-          (exactApp && partialGroups.length) ? [
+          // 名字里含关键词的其它 App —— 用户可能其实想加那些，所以附上可直接点的命令
+          nearGroups.length ? [
             "",
             `<i>顺便说：tfstore / departures 上名字里含「${esc(name)}」的是这些（都不是「${esc(name)}」本身）：</i>`,
-            ...partialGroups.slice(0, 4).map((g) => `<i>· ${esc(g.name)}　` +
+            ...nearGroups.slice(0, 4).map((g) => `<i>· ${esc(g.name)}　` +
               g.items.slice(0, 3).map((x) => `<code>/add ${esc(x.code)}</code>`).join("　") + `</i>`),
           ].join("\n") : "",
         ].filter(Boolean).join("\n"));
         return;
       }
-      if (groups.length > 1) {
-        // 名字有歧义时**不替用户猜** —— 猜错了会让他盯上一个完全不相干的 App
-        const lines = [`「${esc(name)}」匹配到 ${groups.length} 个 App —— 我不替你猜，用完整名字再来一次，或直接点下面的命令：`];
-        for (const g of groups.slice(0, 6)) {
-          lines.push(`· ${esc(g.name)}`);
-          for (const it of g.items.slice(0, 4)) {
-            lines.push(`  <code>/add ${esc(it.code)}</code>${it.state ? " — " + esc(STATE_LABEL[it.state] || it.state) : ""}`);
-          }
-        }
-        await notifier.send(lines.join("\n"));
-        return;
-      }
-      const g = groups[0];
+      const g = exactGroups[0];
+
       const best = pickBestLink(g.items);
       code = best.code;
       // 这个 id 是机器人**自己解析出来**的，不是用户给的 —— 来源要如实标 auto
@@ -2683,7 +2680,7 @@ async function listChatIds(env = {}, opts = {}) {
  * 用 GET /health 就能看，省得在平台日志里翻。
  */
 async function health(env = {}, opts = {}) {
-  const out = { ok: true, checks: {} };
+  const out = { ok: true, features: FEATURES, checks: {} };
   let cfg;
   try {
     cfg = loadConfig(env);

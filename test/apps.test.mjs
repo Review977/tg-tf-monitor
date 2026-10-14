@@ -223,8 +223,44 @@ test("⭐ /add <名字>：按名字直接加进监控（自己找链接、自己
   assert.match(all, /还有 1 个别的链接/, "要告诉用户还有别的码可选");
 });
 
-test("/add <名字>：名字有歧义时**不替用户猜**，列出来让他选", async () => {
+test("⭐ /add 微信：iTunes 挂掉（429）时也必须建对 App 级监控 —— 决策不能依赖 iTunes", async () => {
+  // 这条是老板实测打回来的那个 bug 的**根因测试**：
+  // 我第一版把"用户指的是哪个 App"挂在 iTunes 的精确同名上，
+  // 而 Cloudflare 共享出口 IP 常被 iTunes 429 -> 一失败就退回"名字里含关键词"
+  // -> 又变成列「微信读书/微信输入法」并拒绝。**决策必须建立在最稳的来源上。**
+  const itunes429 = new Response("rate limited", { status: 429 });
+  const calls = [];
+  const f = async (url) => {
+    const u = String(url);
+    calls.push(u);
+    if (u.includes("itunes.apple.com")) return itunes429;          // 模拟限流
+    if (u.includes("departures.to/search")) return htmlRes(depSearchPage([]));
+    if (u.includes("tfstore.top")) {
+      return htmlRes(`<script type="application/ld+json">{"@graph":[{"@type":"ItemList","itemListElement":[
+        {"@type":"ListItem","url":"https://tfstore.top/zh-CN/apps/5MWjLpYl","name":"微信读书"},
+        {"@type":"ListItem","url":"https://tfstore.top/zh-CN/apps/iSTXkF4K","name":"微信输入法"}]}]}</script>`);
+    }
+    return htmlRes(load("open_zh.html"));
+  };
+  const state = normalizeState(null);
+  const { sent, notifier } = collector();
+  await handleCommand({ cfg: { telegram: {} }, state, notifier, text: "/add 微信", fetchImpl: f });
+  const all = sent.join("\n").replace(/<[^>]+>/g, "");
+
+  const keys = Object.keys(state.links);
+  assert.equal(keys.length, 1, "只该建一条，实际：" + JSON.stringify(keys));
+  assert.equal(state.links[keys[0]].kind, "app", "要建 App 级监控");
+  assert.equal(state.links[keys[0]].label, "微信");
+  assert.ok(!state.links["5MWjLpYl"] && !state.links["iSTXkF4K"], "绝不能被名字里含「微信」的其它 App 带偏");
+  assert.ok(!/匹配到 2 个 App/.test(all), "不该再判成有歧义（老板明确不要这个行为）");
+  assert.match(all, /已加入监控（App 级）：微信/);
+  assert.match(all, /都不是「微信」本身/, "那些近似候选要作为附注给出");
+});
+
+test("/add <名字>：没有精确同名时建 App 级监控，并把近似候选作为附注（不再要求用户二选一）", async () => {
   const { f } = makeFetch({
+    itunes: { resultCount: 0, results: [] },
+    depRows: [],
     tfstorePage: `<script type="application/ld+json">{"@graph":[{"@type":"ItemList","itemListElement":[
       {"@type":"ListItem","url":"https://tfstore.top/zh-CN/apps/aaaaaaaa","name":"微信读书"},
       {"@type":"ListItem","url":"https://tfstore.top/zh-CN/apps/bbbbbbbb","name":"微信输入法"}]}]}</script>`,
@@ -232,13 +268,14 @@ test("/add <名字>：名字有歧义时**不替用户猜**，列出来让他选
   const state = normalizeState(null);
   const { sent, notifier } = collector();
   await handleCommand({ cfg: { telegram: {} }, state, notifier, text: "/add 微信", fetchImpl: f });
-  const all = sent.join("\n");
-  assert.equal(Object.keys(state.links).length, 0, "有歧义时不该擅自加任何一个");
-  assert.match(all, /匹配到 2 个 App/);
-  assert.match(all, /我不替你猜/);
-  assert.match(all, /\/add aaaaaaaa/);
+  const all = sent.join("\n").replace(/<[^>]+>/g, "");
+  assert.equal(Object.keys(state.links).length, 1);
+  assert.equal(Object.values(state.links)[0].kind, "app");
+  assert.match(all, /顺便说/);
+  assert.match(all, /\/add aaaaaaaa/, "近似候选要给出可直接点的命令");
   assert.match(all, /\/add bbbbbbbb/);
 });
+
 
 test("⭐ /add <名字>：现在没有可用链接也照样加进监控（App 级监控），等出现链接再提醒", async () => {
   // 这是老板明确要求的语义：add 是「把这个 App 加进监控」，
@@ -390,6 +427,15 @@ test("同 App 的其它链接已标记「已加入」时，新自动加入的链
   assert.equal(state.links.NEWCODE9.joined, true, "新链接要继承静音，否则又会开始推状态来回");
   assert.match(sent.join("\n"), /这条也一并静音了/);
   assert.match(sent.join("\n"), /发现新的 TF 链接/, "但「有新链接」这条提醒本身不能省");
+});
+
+test("/health 要暴露 features —— 用来判断\"到底部署上没有\"（别再靠猜）", async () => {
+  const { health } = await import("../src/runner.js");
+  const h = await health({ TG_TOKEN: "t", TG_CHAT_ID: "1", ADMIN_KEY: "k" });
+  assert.ok(Array.isArray(h.features) && h.features.length, "要有 features 列表");
+  assert.ok(h.features.includes("name-decision-offline"),
+    "这次修的\"/add 不依赖 iTunes\"必须能在 /health 里查到，实际：" + JSON.stringify(h.features));
+  assert.ok(h.features.includes("app-level-watch"));
 });
 
 test("findWatchEntries：先当码认、再当 App 级 key 认、最后按名字（精确优先）", async () => {
