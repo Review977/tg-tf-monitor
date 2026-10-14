@@ -143,8 +143,14 @@ upstash.com → 建一个 Redis 数据库 → 复制 `REST URL` 和 `REST TOKEN`
 
 **3. 配环境变量**（Vercel → Settings → Environment Variables）
 `TG_TOKEN`、`TG_CHAT_ID`、`ADMIN_KEY`、`TG_WEBHOOK_SECRET`、
-`UPSTASH_REDIS_REST_URL`、`UPSTASH_REDIS_REST_TOKEN`。
-建议再加 `CRON_SECRET`（Vercel Cron 会自带 `Authorization: Bearer <CRON_SECRET>`）。
+`UPSTASH_REDIS_REST_URL`、`UPSTASH_REDIS_REST_TOKEN`，
+**再加 `CRON_SECRET`**（随机 16+ 位）。
+
+> ⚠️ `CRON_SECRET` 为什么建议一定要设：设了它，Vercel 每次跑 cron 会自动带
+> `Authorization: Bearer <CRON_SECRET>`，鉴权才严。
+> **不设也能跑** —— 代码会退一步认 `x-vercel-cron-schedule` 头（Vercel Cron 每次必带，官方文档明说），
+> 否则每日定时会被 403 挡住、**静默什么都不做**。代价是任何伪造该头的请求也能触发一轮检查
+> （去重机制在，最多多跑一次、不会重复推送）。`/api/health` 会把这条作为提醒列出来。
 
 **4. 部署**，然后按同样的顺序：
 ```
@@ -237,13 +243,13 @@ TG 频道可用（`@testflight` / `@TestFlightApps` 每次各约 15 个 join 码
 
 ```bash
 node build.mjs        # 拼出 dist/worker.js（会检查撞名 + 语法 + export default 唯一）
-node --test           # 86 项测试
+node --test           # 92 项测试
 node bench.mjs        # CPU 基准（回答"10ms 够不够"）
 node cli.mjs selftest # 联网：拿 4 个已知状态的 join 码验证判定
 node cli.mjs check    # 联网：真实跑一轮（默认只打印不发）
 ```
 
-测试覆盖（**86 项全过**）：
+测试覆盖（**92 项全过**）：
 
 | 组 | 内容 |
 |---|---|
@@ -254,7 +260,7 @@ node cli.mjs check    # 联网：真实跑一轮（默认只打印不发）
 | 消息安全 | 告警被 Telegram 拒收 = **静默漏报**。发前校验 HTML（白名单标签 + 配对 + 禁裸 `<` 与未转义 `&`），超长按行截断，不合法退回纯文本 |
 | 入口层 | 用桩 fetch + 桩 KV 把整个 Worker 跑一遍：Cron 分派、`/run` 鉴权、Webhook secret 校验、非授权会话忽略、`/scan` 真跑发现源、`/set-webhook` 带 secret_token |
 | **产物一致性** | 同一套入口断言对 `src/worker.js` **和 `dist/worker.js` 各跑一遍** —— 保证"你要粘贴的那个包"是实际执行过的 |
-| Vercel | 四个入口的鉴权/报错/成功路径，`CRON_SECRET` 放行，Upstash 读写与坏数据兜底 |
+| Vercel | 五个入口的鉴权/报错/成功路径；`CRON_SECRET` 放行、**不设时靠 `x-vercel-cron-schedule` 兜底且配了就收紧**；Upstash 读写与坏数据兜底 |
 
 ---
 
@@ -289,7 +295,7 @@ dist/worker.js     单文件构建产物 —— 粘进 Cloudflare 控制台的�
 build.mjs          构建（撞名检查 + 语法检查 + export default 唯一性检查）
 bench.mjs          CPU 基准
 cli.mjs            本地调试 CLI（可选，部署不需要）
-test/              86 项测试
+test/              92 项测试
 ```
 
 **逻辑只有一份**：平台差异全部收敛在 `src/worker.js` / `api/*.js` 和 storage 适配器里，

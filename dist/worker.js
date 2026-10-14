@@ -11,7 +11,7 @@
  * 用法：整个文件贴进 Cloudflare 控制台的 Worker 编辑器即可。
  * 该产物已被 test/handler.test.mjs 实际 import 并跑过断言。
  *
- * 源码指纹（sha256 前 16 位）：3d32dadf99f0beb3
+ * 源码指纹（sha256 前 16 位）：c523a2e7a872374a
  * ⚠️ 这里刻意**不放构建时间** —— 放了构建就不可复现，
  *    CI 里"产物必须与源码同步"那条检查会永远失败（这是被 CI 抓出来的）。
  */
@@ -1502,6 +1502,20 @@ async function health(env = {}, opts = {}) {
     out.ok = false;
   }
   if (cfg) out.checks.watch = (cfg.watch || []).map((w) => w.code);
+
+  // 可执行的提醒：不设这些虽然能跑，但会静默降级成"不太安全"的形态
+  const notes = [];
+  if (!env.CRON_SECRET) {
+    notes.push("没设 CRON_SECRET：Vercel 的定时触发将没有 Authorization 头，" +
+      "只能靠 x-vercel-cron-schedule 头识别（任何伪造该头的请求也能触发）。建议设一个随机 16+ 位。");
+  }
+  if (!env.TG_WEBHOOK_SECRET) {
+    notes.push("没设 TG_WEBHOOK_SECRET：Webhook 端点不校验来源，任何人都能伪造 Telegram 推送来触发命令。强烈建议设。");
+  }
+  if (!env.ADMIN_KEY && !env.TG_WEBHOOK_SECRET) {
+    notes.push("ADMIN_KEY 与 TG_WEBHOOK_SECRET 都没设：运维端点（/run、/set-webhook、/chat-id）一律拒绝，无法使用。");
+  }
+  if (notes.length) out.notes = notes;
   return out;
 }
 

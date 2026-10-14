@@ -161,6 +161,41 @@ test("api/run：配置缺 token 时明确报错（不静默）", async () => {
   });
 });
 
+test("api/run：没配 CRON_SECRET 时，Vercel Cron 的 x-vercel-cron-schedule 头放行（避免静默 403）", async () => {
+  await withEnv({ ...BASE_ENV, CRON_SECRET: undefined }, async () => {
+    const { f } = makeFetchStub();
+    await withFetch(f, async () => {
+      const res = mockRes();
+      await runHandler(
+        { method: "GET", headers: { "x-vercel-cron-schedule": "0 3 * * *" }, query: { mode: "monitor" } },
+        res
+      );
+      assert.equal(res.statusCode, 200, "不设 CRON_SECRET 时 Vercel Cron 不该被 403 挡住");
+      assert.equal(res.body.via, "vercel-cron-unsecured");
+    });
+  });
+});
+
+test("api/run：配了 CRON_SECRET 后，光有 x-vercel-cron-schedule 头不再放行（收紧）", async () => {
+  await withEnv({ ...BASE_ENV, CRON_SECRET: "cron-secret-xyz" }, async () => {
+    const res = mockRes();
+    await runHandler(
+      { method: "GET", headers: { "x-vercel-cron-schedule": "0 3 * * *" }, query: { mode: "monitor" } },
+      res
+    );
+    assert.equal(res.statusCode, 403, "配了 CRON_SECRET 就必须用它，不能被伪造头绕过");
+    assert.match(res.body.hint, /CRON_SECRET/);
+  });
+});
+
+test("api/run：普通请求（无 key、无 cron 头）仍被拒", async () => {
+  await withEnv(BASE_ENV, async () => {
+    const res = mockRes();
+    await runHandler({ method: "GET", headers: {}, query: { mode: "monitor" } }, res);
+    assert.equal(res.statusCode, 403);
+  });
+});
+
 // ───────────────────────── /api/telegram ─────────────────────────
 
 test("api/telegram：GET → 405", async () => {

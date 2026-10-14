@@ -13,28 +13,48 @@
 
 import { doRun } from "../src/runner.js";
 
+/**
+ * 鉴权。三条路，任一成立即放行：
+ *   1. `Authorization: Bearer <CRON_SECRET>` —— Vercel Cron 在设了 CRON_SECRET 时会自动带
+ *   2. `?key=<ADMIN_KEY>`（或 TG_WEBHOOK_SECRET）—— 手动 / 外部定时器用
+ *   3. 带 `x-vercel-cron-schedule` 头且**没配 CRON_SECRET**
+ *      —— 这个头是 Vercel Cron 每次调用都会带的（官方文档明说）。
+ *      之所以放行：不设 CRON_SECRET 时 Vercel 不带任何 Authorization，
+ *      如果这里一律拒绝，**每日定时就会静默 403、什么都不做** —— 那比"能被伪造触发"更糟。
+ *      代价是别人伪造这个头也能触发一轮检查；因为去重机制在，
+ *      最多是多跑一次、不会重复推送。想要严就设 CRON_SECRET。
+ */
 function authorized(req) {
   const key = String(process.env.ADMIN_KEY || process.env.TG_WEBHOOK_SECRET || "");
   const cronSecret = String(process.env.CRON_SECRET || "");
   const auth = String(req.headers.authorization || "");
   const q = (req.query && req.query.key) || "";
 
-  // Vercel Cron 会带 Bearer CRON_SECRET
-  if (cronSecret && auth === `Bearer ${cronSecret}`) return true;
-  // 没配 CRON_SECRET 时，Vercel Cron 请求不带 Authorization —— 那就只认 key
-  if (!key) return false; // 没配 key：拒绝，不默认放行
-  if (q.length !== key.length) return false;
-  let diff = 0;
-  for (let i = 0; i < key.length; i++) diff |= q.charCodeAt(i) ^ key.charCodeAt(i);
-  return diff === 0;
+  if (cronSecret && auth === `Bearer ${cronSecret}`) return { ok: true, via: "cron-secret" };
+
+  if (key) {
+    if (q.length === key.length) {
+      let diff = 0;
+      for (let i = 0; i < key.length; i++) diff |= q.charCodeAt(i) ^ key.charCodeAt(i);
+      if (diff === 0) return { ok: true, via: "admin-key" };
+    }
+  }
+
+  const isVercelCron = !!(req.headers["x-vercel-cron-schedule"] || req.headers["x-vercel-cron"]);
+  if (isVercelCron && !cronSecret) return { ok: true, via: "vercel-cron-unsecured" };
+
+  return {
+    ok: false,
+    why: cronSecret
+      ? "带了 CRON_SECRET 就必须用它（Authorization: Bearer …），或改用 ?key=<ADMIN_KEY>"
+      : "需要 ?key=<ADMIN_KEY>；如果你是 Vercel Cron 触发的，说明它没带 x-vercel-cron-schedule 头",
+  };
 }
 
 export default async function handler(req, res) {
-  if (!authorized(req)) {
-    res.status(403).json({
-      error: "需要授权",
-      hint: "带 ?key=<ADMIN_KEY>，或由 Vercel Cron 携带 Authorization: Bearer $CRON_SECRET 触发",
-    });
+  const auth = authorized(req);
+  if (!auth.ok) {
+    res.status(403).json({ error: "需要授权", hint: auth.why });
     return;
   }
   const mode = (req.query && req.query.mode) || "all";
@@ -42,9 +62,12 @@ export default async function handler(req, res) {
     res.status(400).json({ error: "mode 只能是 all / monitor / discovery" });
     return;
   }
+  if (auth.via === "vercel-cron-unsecured") {
+    console.log("[run] ⚠️ 这次是 Vercel Cron 触发的，但没配 CRON_SECRET —— 建议设一个（随机 16+ 位），否则任何带 x-vercel-cron-schedule 头的请求都能触发。");
+  }
   try {
     const r = await doRun(process.env, { mode, log: (m) => console.log("[run] " + m) });
-    res.status(200).json({ ok: true, ...r });
+    res.status(200).json({ ok: true, via: auth.via, ...r });
   } catch (e) {
     console.log("[run] 失败: " + (e && e.message));
     res.status(500).json({ ok: false, error: String((e && e.message) || e) });
