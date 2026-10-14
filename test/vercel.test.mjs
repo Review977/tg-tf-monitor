@@ -386,6 +386,30 @@ test("TG_CHAT_ID 填了占位值时：明确报错而不是发到错误会话", 
 
 // ───────────────────────── 命令菜单（setMyCommands）─────────────────────────
 
+test("⭐ 命令菜单必须与实际支持的命令一致 —— /joined 就是这么漏掉的", async () => {
+  // 为什么需要这条：我加了 /joined 的实现和帮助，却**忘了加进 Telegram 菜单**，
+  // 结果用户按 / 根本看不到它。原测试只查格式（长度、小写），查不出这种漏。
+  const src = readFileSync(new URL("../src/core.js", import.meta.url), "utf8");
+  const handled = new Set();
+  for (const line of src.split("\n")) {
+    if (!line.includes("cmd ===")) continue;          // 只看判断命令的那几行
+    for (const m of line.matchAll(/"(\/[a-z]+)"/g)) handled.add(m[1].slice(1));
+  }
+  assert.ok(handled.size >= 10, "解析出的命令太少，正则可能失效了：" + [...handled].join(","));
+
+  const { BOT_COMMANDS } = await import("../src/runner.js");
+  const menu = new Set(BOT_COMMANDS.map((c) => c.command));
+  // 别名不必单列进菜单（它们都有对应的主命令）
+  const ALIASES = new Set(["start", "app", "done"]);
+
+  const missing = [...handled].filter((c) => !menu.has(c) && !ALIASES.has(c));
+  assert.deepEqual(missing, [],
+    "这些命令有实现但没进菜单（用户按 / 看不到）：" + missing.join(", "));
+
+  const dead = [...menu].filter((c) => !handled.has(c));
+  assert.deepEqual(dead, [], "菜单里有实际不存在的命令：" + dead.join(", "));
+});
+
 test("BOT_COMMANDS 满足 Telegram 对 BotCommand 的硬限制", async () => {
   const { BOT_COMMANDS } = await import("../src/runner.js");
   assert.ok(BOT_COMMANDS.length > 0 && BOT_COMMANDS.length <= 100, "最多 100 条");

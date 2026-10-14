@@ -125,6 +125,10 @@ export async function handleUpdate(env = {}, update, opts = {}) {
       runner: {
         runMonitor: (a) => runMonitor(a),
         runDiscovery: (a) => runDiscovery(a),
+        // 让 /start 顺手把命令菜单刷成**当前部署版本**的样子。
+        // 否则加了新命令（比如 /joined）后，用户按 / 还是看到旧菜单，
+        // 而且他没法知道该重发一次 /set-commands —— 这种"静默过期"最难查。
+        setCommands: () => setBotCommands(env, { fetchImpl }),
       },
     });
     await store.save(state);
@@ -191,8 +195,10 @@ export async function webhookInfo(env = {}, opts = {}) {
  */
 export const BOT_COMMANDS = [
   { command: "apps", description: "看监控中的 App 各自盯了什么" },
-  { command: "find", description: "按名字搜 App（App Store id / departures / tfstore 上的 TF 码）" },
-  { command: "add", description: "加一个 App 进监控：/add <TestFlight 链接> [名称]" },
+  { command: "find", description: "按名字查 TF 链接（只查，不改监控列表）" },
+  { command: "add", description: "按名字加进监控（没链接也能加）：/add 微信读书" },
+  { command: "joined", description: "标记「我已上车」→ 不再提醒它的状态来回" },
+  { command: "unjoined", description: "恢复提醒（撤销 joined）" },
   { command: "del", description: "移出监控：/del <join 码>" },
   { command: "status", description: "当前监控状态" },
   { command: "check", description: "立刻跑一轮监控" },

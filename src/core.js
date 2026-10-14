@@ -1896,6 +1896,17 @@ export async function handleCommand({ cfg, state, notifier, text, chatId, log = 
   const run = runner || { runMonitor, runDiscovery };
 
   if (cmd === "/start" || cmd === "/help") {
+    // 顺手把 Telegram 的命令菜单刷成当前版本 —— 加了新命令后，
+    // 用户按 / 就能看到，不需要知道"要重发一次 /set-commands"。
+    // 失败不影响主流程（菜单只是便利设施）。
+    if (run.setCommands) {
+      try {
+        const r = await run.setCommands();
+        log(`已刷新命令菜单（${r && r.count ? r.count : "?"} 条）`);
+      } catch (e) {
+        log("刷新命令菜单失败（不影响使用）：" + (e && e.message));
+      }
+    }
     await notifier.send(HELP);
   } else if (cmd === "/status") {
     await notifier.send(renderStatus(cfg, state));

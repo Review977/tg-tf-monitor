@@ -11,7 +11,7 @@
  * 用法：整个文件贴进 Cloudflare 控制台的 Worker 编辑器即可。
  * 该产物已被 test/handler.test.mjs 实际 import 并跑过断言。
  *
- * 源码指纹（sha256 前 16 位）：bd6c76ab368dd4b9
+ * 源码指纹（sha256 前 16 位）：563fc18b387ab35e
  * ⚠️ 这里刻意**不放构建时间** —— 放了构建就不可复现，
  *    CI 里"产物必须与源码同步"那条检查会永远失败（这是被 CI 抓出来的）。
  */
@@ -1915,6 +1915,17 @@ async function handleCommand({ cfg, state, notifier, text, chatId, log = () => {
   const run = runner || { runMonitor, runDiscovery };
 
   if (cmd === "/start" || cmd === "/help") {
+    // 顺手把 Telegram 的命令菜单刷成当前版本 —— 加了新命令后，
+    // 用户按 / 就能看到，不需要知道"要重发一次 /set-commands"。
+    // 失败不影响主流程（菜单只是便利设施）。
+    if (run.setCommands) {
+      try {
+        const r = await run.setCommands();
+        log(`已刷新命令菜单（${r && r.count ? r.count : "?"} 条）`);
+      } catch (e) {
+        log("刷新命令菜单失败（不影响使用）：" + (e && e.message));
+      }
+    }
     await notifier.send(HELP);
   } else if (cmd === "/status") {
     await notifier.send(renderStatus(cfg, state));
@@ -2509,6 +2520,10 @@ async function handleUpdate(env = {}, update, opts = {}) {
       runner: {
         runMonitor: (a) => runMonitor(a),
         runDiscovery: (a) => runDiscovery(a),
+        // 让 /start 顺手把命令菜单刷成**当前部署版本**的样子。
+        // 否则加了新命令（比如 /joined）后，用户按 / 还是看到旧菜单，
+        // 而且他没法知道该重发一次 /set-commands —— 这种"静默过期"最难查。
+        setCommands: () => setBotCommands(env, { fetchImpl }),
       },
     });
     await store.save(state);
@@ -2575,8 +2590,10 @@ async function webhookInfo(env = {}, opts = {}) {
  */
 const BOT_COMMANDS = [
   { command: "apps", description: "看监控中的 App 各自盯了什么" },
-  { command: "find", description: "按名字搜 App（App Store id / departures / tfstore 上的 TF 码）" },
-  { command: "add", description: "加一个 App 进监控：/add <TestFlight 链接> [名称]" },
+  { command: "find", description: "按名字查 TF 链接（只查，不改监控列表）" },
+  { command: "add", description: "按名字加进监控（没链接也能加）：/add 微信读书" },
+  { command: "joined", description: "标记「我已上车」→ 不再提醒它的状态来回" },
+  { command: "unjoined", description: "恢复提醒（撤销 joined）" },
   { command: "del", description: "移出监控：/del <join 码>" },
   { command: "status", description: "当前监控状态" },
   { command: "check", description: "立刻跑一轮监控" },
