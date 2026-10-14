@@ -94,12 +94,26 @@ Cloudflare 有两条路，**任选一条**：
 > - `TG_CHAT_ID`：第 ③ 步拿到后去 `Settings` → `Variables and Secrets` 补
 > - `TG_WEBHOOK_SECRET`：不设就回落到用 `ADMIN_KEY` 做 Webhook 来源校验，够用
 
-⚠️ **如果它报红字 `Your GitHub authorization has expired`** —— 那是 Cloudflare 侧的 GitHub 授权过期，
-跟本项目无关。两个选择：
+⚠️ **如果它报红字** —— 下面两种都是 Cloudflare 侧的 GitHub 连接问题，跟本项目无关
+（仓库侧已核实：公开、匿名 `git clone` 成功、根目录有 `wrangler.toml`，满足官方文档全部前置要求）：
 
-- **修它**：打开 <https://github.com/settings/installations>，
-  找到 **Cloudflare Workers and Pages** 这个 App → `Configure` → 重新授权/重装，然后回到部署页重试。
-- **绕开它**：直接走下面的 **A-2 手工粘贴**，那条路完全不碰 GitHub。
+| 报错 | 含义 |
+|---|---|
+| `Your GitHub authorization has expired` | Cloudflare 的 GitHub 授权过期 |
+| `无法获取存储库内容。` | Cloudflare 读不到仓库 —— 通常是那个 App **没被授权访问这个仓库** |
+
+**先试这个（30 秒）**：
+
+1. 打开 <https://github.com/settings/installations>
+2. 找到 **Cloudflare Workers and Pages** 这个 App（官方文档里的名字，
+   App 页在 <https://github.com/apps/cloudflare-workers-and-pages>）
+3. 点 `Configure` → 看 **Repository access**
+   —— 如果选的是 `Only select repositories`，确认 **`tg-tf-monitor` 在里面**；
+   这个仓库是新建的，很可能没被勾上
+4. `Save` → 回部署页重试
+
+> 实在不想折腾：**直接走下面的 A-2 手工粘贴**，那条路完全不碰 GitHub，
+> 而且不需要 Cloudflare 读你的仓库。
 
 ---
 
@@ -134,6 +148,26 @@ Worker → `Settings` → `Variables and Secrets`，加这几个（建议都选�
 | `TG_WEBHOOK_SECRET` | ⬜ 可选 | 想给 Webhook 单独一把密钥再设；不设则用 `ADMIN_KEY` |
 
 随机串生成：随便敲一长串，或本地跑 `openssl rand -hex 24`。
+
+> 这里**只加 `TG_TOKEN` 和 `ADMIN_KEY`**。`TG_CHAT_ID` 现在还不知道，
+> 等第 6 步拿到再加。
+
+**6. 加两条定时任务**
+Worker → `Settings` → `Triggers` → `Cron Triggers` → 加：
+
+```
+*/30 * * * *      每 30 分钟：只监控
+0 */6 * * *       每 6 小时：监控 + 全源发现
+```
+
+**7. 打开自检页确认**
+浏览器开 `https://<你的worker>.workers.dev/` —— 应看到一个文本页，
+列出配置 / 存储 / Webhook 状态和下一步该做什么。
+若显示存储不可用，就是第 4 步的绑定变量名没写对（必须是 `STATE`）。
+
+**8. 之后回到 [SETUP.md](SETUP.md) 第 ③ 步**：
+给 bot 发消息 → `/chat-id?key=<ADMIN_KEY>` 拿 chat_id →
+加到 `Variables and Secrets` → `/set-webhook?key=` → `/set-commands?key=` → TG 里发 `/status`。
 
 **6. 加定时任务**
 Worker → `Settings` → `Triggers` → `Cron Triggers` → 加两条：
@@ -434,7 +468,18 @@ test/              116 项测试
 
 ## 排查
 
-**部署页报红字 `Your GitHub authorization has expired`**
+**部署页报红字 `无法获取存储库内容。` / `Your GitHub authorization has expired`**
+都是 Cloudflare 侧的 GitHub 连接问题。先去
+<https://github.com/settings/installations> 找到 **Cloudflare Workers and Pages**，
+在 `Configure` 里确认 **Repository access 包含 `tg-tf-monitor`**（新仓库很容易没被勾上）。
+还不行就走 [A-2 手工粘贴](#a-2-手工粘贴不依赖-github) —— 它不需要 Cloudflare 读你的仓库。
+
+**怎么确认不是仓库的问题**（一条命令）：
+```bash
+git ls-remote https://github.com/Review977/tg-tf-monitor
+```
+能列出 `refs/heads/main` 就说明任何人（包括 Cloudflare）都能匿名克隆它。
+
 Cloudflare 的 GitHub 授权过期了，与本项目无关。要么去
 <https://github.com/settings/installations> 找到 **Cloudflare Workers and Pages** 重新授权，
 要么直接走 [A-2 手工粘贴](#a-2-手工粘贴不依赖-github)（不碰 GitHub）。
