@@ -300,6 +300,56 @@ test("/unjoined：恢复提醒", async () => {
   assert.match(sent.join("\n"), /已恢复提醒/);
 });
 
+test("⭐ 已标记「已加入」的 App 出现**新链接**时，仍然要告诉你（joined 只压状态来回）", async () => {
+  // 老板问的就是这个：「那如果番茄小说后面又有新链接呢？」
+  // 答案必须是"会告诉你" —— 否则 joined 会让人漏掉真信息。
+  const { registerDiscovery } = await import("../src/core.js");
+  const state = normalizeState({
+    links: { dTUO1uyt: { label: "番茄小说", state: "full", joined: true, keywords: ["番茄小说"] } },
+  });
+  const { sent, notifier } = collector();
+  const { f } = makeFetch({ joinHtml: load("open_zh.html") });
+  await registerDiscovery(
+    { cfg: { autoWatchDiscovered: false, keywords: [] }, state, notifier, fetchImpl: f },
+    { code: "NEWCODE9", source: "tfstore.top", appName: "番茄小说", context: "" }
+  );
+  const all = sent.join("\n");
+  assert.match(all, /发现新的 TF 链接/, "新链接必须提醒，不能被 joined 吃掉");
+  assert.match(all, /NEWCODE9/);
+});
+
+test("已标记「已加入」的 App：新链接提醒，但**不自动**加进监控（并说明原因）", async () => {
+  const { registerDiscovery } = await import("../src/core.js");
+  const state = normalizeState({
+    links: { "app:1468454200": { kind: "app", label: "番茄小说", joined: true, keywords: ["番茄小说"], codes: [] } },
+  });
+  const { sent, notifier } = collector();
+  const { f } = makeFetch({ joinHtml: load("open_zh.html") });
+  await registerDiscovery(
+    { cfg: { autoWatchDiscovered: false, keywords: [] }, state, notifier, fetchImpl: f },
+    { code: "NEWCODE9", source: "tfstore.top", appName: "番茄小说", context: "" }
+  );
+  assert.ok(!state.links.NEWCODE9, "已加入的 App 不该再自动多盯一条");
+  assert.match(sent.join("\n"), /你标记过「已加入」，所以没自动加进监控/);
+  assert.match(sent.join("\n"), /新链接仍然告诉你/);
+});
+
+test("同 App 的其它链接已标记「已加入」时，新自动加入的链接也一并静音（不再推状态来回）", async () => {
+  const { registerDiscovery } = await import("../src/core.js");
+  const state = normalizeState({
+    links: { OLDCODE1: { label: "番茄小说", state: "full", joined: true, keywords: ["番茄小说"] } },
+  });
+  const { sent, notifier } = collector();
+  const { f } = makeFetch({ joinHtml: load("open_zh.html") });
+  await registerDiscovery(
+    { cfg: { autoWatchDiscovered: true, keywords: [] }, state, notifier, fetchImpl: f },
+    { code: "NEWCODE9", source: "tfstore.top", appName: "番茄小说", context: "" }
+  );
+  assert.equal(state.links.NEWCODE9.joined, true, "新链接要继承静音，否则又会开始推状态来回");
+  assert.match(sent.join("\n"), /这条也一并静音了/);
+  assert.match(sent.join("\n"), /发现新的 TF 链接/, "但「有新链接」这条提醒本身不能省");
+});
+
 test("findWatchEntries：先当码认、再当 App 级 key 认、最后按名字（精确优先）", async () => {
   const { findWatchEntries } = await import("../src/core.js");
   const state = normalizeState({ links: {

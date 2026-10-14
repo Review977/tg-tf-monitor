@@ -11,7 +11,7 @@
  * 用法：整个文件贴进 Cloudflare 控制台的 Worker 编辑器即可。
  * 该产物已被 test/handler.test.mjs 实际 import 并跑过断言。
  *
- * 源码指纹（sha256 前 16 位）：e90e448175246e2b
+ * 源码指纹（sha256 前 16 位）：0ca1e3e72c1d60ff
  * ⚠️ 这里刻意**不放构建时间** —— 放了构建就不可复现，
  *    CI 里"产物必须与源码同步"那条检查会永远失败（这是被 CI 抓出来的）。
  */
@@ -1078,6 +1078,8 @@ function findWatchEntries(state, arg) {
  */
 function wishMatches(rec, foundName, foundCode) {
   if (!rec || rec.kind !== "app") return false;
+  // 只判"像不像"，**不判 joined** —— "要不要因为已加入而跳过"是调用方的决定。
+  // 混在一起会让"匹配到了但已加入"这种情况无法区分。
   if ((rec.codes || []).includes(foundCode)) return false;
   const a = String(foundName || "").trim().toLowerCase();
   if (!a) return false;
@@ -1601,7 +1603,10 @@ async function registerDiscovery({ cfg, state, notifier, log = () => {}, fetchIm
   // 命中"App 级监控"时不受 autoWatchDiscovered 全局开关约束（见 wishMatches 的说明）
   const wish = Object.entries(state.links || {})
     .find(([, r]) => wishMatches(r, item.appName, code));
-  const byWish = !!wish && info.state === "open";
+  const wishJoined = !!(wish && wish[1].joined);
+  // 已标记「已加入」的 App：**新链接照样告诉你**（这是真信息），
+  // 只是不再自动加进监控列表 —— 用户都上车了，不需要再多盯一条。
+  const byWish = !!wish && !wishJoined && info.state === "open";
   const watched = (!!cfg.autoWatchDiscovered && autoOk && info.state === "open") || byWish;
   if (watched) {
     const rec = (state.links[code] = state.links[code] || {});
@@ -1611,6 +1616,14 @@ async function registerDiscovery({ cfg, state, notifier, log = () => {}, fetchIm
       descHash: info.descHash, lastChecked: info.checkedAt,
     });
     if (!rec.stateSince) rec.stateSince = nowStamp();
+    // 同一个 App 的**别的**链接如果已经标记过「已加入」，这条新链接也一并静音。
+    // 否则用户会开始收到这条新链接的"满员 ↔ 又能进"来回 ——
+    // 而他要的信息（"有新链接了"）上面那条提醒已经给过了。
+    const siblingJoined = Object.values(state.links || {}).some((r) =>
+      r !== rec && r.joined && r.label && item.appName &&
+      (String(r.label).trim().toLowerCase() === String(item.appName).trim().toLowerCase() ||
+       String(item.appName).toLowerCase().includes(String(r.label).trim().toLowerCase())));
+    if (siblingJoined) { rec.joined = true; rec.joinedInherited = true; }
   }
   if (byWish) {
     const wr = wish[1];
@@ -1628,7 +1641,13 @@ async function registerDiscovery({ cfg, state, notifier, log = () => {}, fetchIm
   if (item.appName) msg.push(`应用：${esc(item.appName)}`);
   msg.push(`来源：${esc(item.source || "")}`);
   if (item.context) msg.push(`上下文：${esc(String(item.context).slice(0, 200))}`);
-  if (watched) msg.push("已自动加入监控列表。");
+  if (watched) {
+    msg.push("已自动加入监控列表。");
+    if (state.links[code] && state.links[code].joinedInherited) {
+      msg.push("（同 App 的其它链接你标记过「已加入」，这条也一并静音了）");
+    }
+  }
+  else if (wishJoined) msg.push("（这个 App 你标记过「已加入」，所以没自动加进监控 —— 但新链接仍然告诉你）");
   else if (info.state === "open") msg.push(`（未自动加入监控：应用名没命中 autoWatchKeywords。要盯就发 /add ${esc(code)}）`);
   msg.push(`时间：${nowStr()}`);
   return (await notifier.send(msg.join("\n"))) ? 1 : 0;
@@ -1838,6 +1857,8 @@ const HELP = `<b>tg-tf-monitor 命令</b>
 /del &lt;码&gt; — 移出监控
 /joined &lt;名字或码&gt; — 标记「我已经上车了」→ **之后不再提醒**它（状态照样更新）
 /unjoined &lt;名字或码&gt; — 恢复提醒
+    注意：标记「已加入」只压掉"同一条链接的状态来回"和版本更新；
+    **发现这个 App 的新链接时仍然会告诉你**（那是真信息，不是噪音）
 
 <b>查 App（只查，不改监控列表）</b>
 /find &lt;名字&gt; — 按名字查 TF 链接：三路并搜，列出码 + 状态 + departures id
