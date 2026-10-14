@@ -336,11 +336,13 @@ https://<项目>.vercel.app/api/run?key=<ADMIN_KEY>&mode=all
 bot 会自己去补齐并回你（下面是**真实跑出来的输出**）：
 
 ```
-✅ 已加入监控：微信读书
-join 码：5MWjLpYl　状态：已满员 ⛔
+✅ 已加入监控：微信读书 — 已满员 ⛔
+https://testflight.apple.com/join/5MWjLpYl
 App Store：952059546（com.tencent.weread） 自动匹配
 departures.to：21038 自动匹配
 发现关键词：微信读书 / com.tencent.weread
+
+会被盯：链接状态、App Store 正式版号、departures.to 链接轮换；/scan 时按它的关键词找新链接。
 ```
 
 加完之后这个 App 会被盯四件事：
@@ -415,6 +417,31 @@ TG 频道可用（`@testflight` / `@TestFlightApps` 每次各约 15 个 join 码
 360 时好时坏；**Bing 对本主题召回 0**（我逐条核对过页面里那 31 处 `testflight.apple.com` 全是查询词回显，不是解析漏抓）。
 
 ---
+
+## 输出长什么样
+
+版式原则：**每条信息只出现一次，静态内容不进消息**（静态说明放 `/help`，
+命令菜单靠 Telegram 的 `/` 列表，不靠页脚提示）。
+
+```
+/apps                                /status
+监控中的 App（1 个）                  tg-tf-monitor 当前状态 · Asia/Shanghai（UTC+8）
+                                     上次监控 3 分钟前 ｜ 上次发现扫描 2 小时前
+1. 番茄小说 TF 公测 — 可加入 ✅
+   https://testflight.apple.com/…    · 番茄小说 TF 公测 可加入 ✅
+   正式版 7.3.9（09-30 上架，14 天前）  https://testflight.apple.com/…
+   ｜ App Store 1468454200            正式版 7.3.9（09-30 上架，14 天前）
+   ｜ departures 16645                状态已保持 3 分钟
+   加入 2026-10-14 16:17
+```
+
+具体几条规则：
+
+- **链接和 join 码只留一个** —— 码就是链接的一部分
+- **时间用相对说法**（"3 分钟前"）—— 状态页要回答的是"它还活着吗"
+- **`departures.to` 只在和我们的判断不一致时显示** —— 一致时它不提供信息
+- **静态的"公测页测试说明"不进消息** —— 每次都一样；**变了才意味着有信息**（那已经有告警）
+- **TF 构建号拿不到这件事写在 `/help`**，不每次刷屏
 
 ## 诚实的能力边界
 

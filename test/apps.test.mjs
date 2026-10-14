@@ -221,24 +221,38 @@ test("/add：不带参数时给用法", async () => {
 
 // ───────────────────── /apps 与 /find ─────────────────────
 
-test("/apps：列出每个 App 都盯了什么", async () => {
-  const state = normalizeState({
-    links: {
-      dTUO1uyt: {
-        label: "番茄小说", appName: "番茄小说 - 热门短剧全本小说电子书阅读器", state: "open",
-        appStoreId: 1468454200, bundleId: "com.dragon.read", departuresId: 16645,
-        keywords: ["番茄小说"], firstSeen: "2026-10-14 04:00 UTC", sources: ["manual"],
-      },
-    },
-  });
-  const out = renderApps(state);
-  assert.match(out, /监控中的 App（1 个）/);
-  assert.match(out, /番茄小说/);
-  assert.match(out, /1468454200/);
-  assert.match(out, /com\.dragon\.read/);
-  assert.match(out, /16645/);
-  assert.match(out, /可加入/);
+test("/apps：列出每个 App 都盯了什么（新版式：一行说清绑定）", async () => {
+  const { renderApps } = await import("../src/core.js");
+  const out = renderApps(normalizeState({
+    links: { dTUO1uyt: { label: "番茄小说 TF 公测", state: "open", appStoreId: 1468454200,
+                       departuresId: 16645, firstSeen: "2026-10-14T08:17:00Z", sources: ["manual"] } },
+    appstore: { "1468454200": { version: "7.3.9", releaseDate: "2026-09-30" } },
+  }));
+  assert.match(out, /番茄小说 TF 公测.*可加入/);
+  assert.match(out, /testflight\.apple\.com\/join\/dTUO1uyt/);
+  assert.match(out, /正式版 7\.3\.9/);
+  assert.match(out, /App Store 1468454200/);
+  assert.match(out, /departures 16645/);
+  assert.match(out, /加入 2026-10-14 16:17/, "加入时间要显示（且是本地时区）");
+  // 明确不该出现的（这些是上一版的噪音）
+  assert.ok(!/join 码/.test(out), "join 码和链接重复，应删掉");
+  assert.ok(!/页面上的名字/.test(out), "页面上的名字是噪音");
+  assert.ok(!/公测页测试说明/.test(out), "测试说明每次都一样，是噪音");
+  assert.ok(!/\/add &lt;TestFlight/.test(out), "命令菜单已注册进 TG，页脚提示是冗余");
+  assert.ok(!/来源/.test(out), "自己加的 App 写「来源 manual」是废话");
 });
+
+test("/apps：没绑 id 时要明确警告（否则你不知道收不到告警）", async () => {
+  const { renderApps } = await import("../src/core.js");
+  const out = renderApps(normalizeState({
+    links: { abcdef: { label: "某App", state: "open", firstSeen: "2026-10-14T08:17:00Z", sources: ["tfstore"] } },
+  }));
+  // 缺绑定压成一行：说清"没绑什么" + "少了哪个能力"
+  assert.match(out, /没绑 App Store \/ departures id/);
+  assert.match(out, /少了：版本更新告警、链接轮换检测/);
+  assert.match(out, /来源 tfstore/, "非 manual 的来源要显示（这条码是从哪发现的）");
+});
+
 
 test("/apps：空列表时给出下一步", () => {
   assert.match(renderApps(normalizeState(null)), /\/find/);
@@ -331,10 +345,10 @@ test("/apps：显示 App Store 正式版号 + 上架日期 + 距今 + 公测页�
     },
   });
   const out = renderApps(state);
-  assert.match(out, /App Store 正式版：7\.3\.9/, "要显示正式版号");
-  assert.match(out, /2026-09-30 上架/, "要显示上架日期");
+  assert.match(out, /正式版 7\.3\.9/, "要显示正式版号");
+  assert.match(out, /09-30 上架/, "要显示上架日期（月-日 就够）");
   assert.match(out, /\d+ 天前/, "要显示距今多久");
-  assert.match(out, /公测页测试说明：恭喜你获得了内测名额/, "要显示公测页测试说明");
+  assert.match(out, /正式版 7\.3\.9/, "要显示正式版号");
 });
 
 test("/apps：上游给完整 ISO 时间戳时，日期也要显示干净（不带 T…Z）", async () => {
@@ -344,26 +358,29 @@ test("/apps：上游给完整 ISO 时间戳时，日期也要显示干净（不�
     appstore: { "1": { version: "1.0", releaseDate: "2026-09-30T02:17:58Z" } },
   });
   const out = renderApps(state);
-  assert.match(out, /2026-09-30 上架/, "应截断到天");
+  assert.match(out, /09-30 上架/, "应截断到天");
   assert.ok(!/T02:17:58Z/.test(out), "不该把完整 ISO 时间戳甩给用户：" + out);
 });
 
-test("/status：明确写出「TF 构建号拿不到」，免得每次重新疑惑", async () => {
-  const { renderStatus } = await import("../src/core.js");
-  const out = renderStatus({}, normalizeState({ links: { abcdef: { label: "某App", state: "open" } } }));
-  assert.match(out, /TF 构建号/, "要提到 TF 构建号");
-  assert.match(out, /Apple 不公开/, "要说明原因");
-  assert.match(out, /TestFlight App 里看/, "要指明去哪看");
-  assert.match(out, /自己会推通知/, "要说明 Apple 已经覆盖了'有新构建'这件事");
+test("/help：TF 构建号拿不到这件事写在帮助里（而不是每次 /status 刷屏）", async () => {
+  const { HELP } = await import("../src/core.js");
+  assert.match(HELP, /TF 版本号/, "帮助里要有这一节");
+  assert.match(HELP, /Apple 不公开/, "要说明原因");
+  assert.match(HELP, /TestFlight App 里看/, "要指明去哪看");
+  const { renderStatus, normalizeState } = await import("../src/core.js");
+  const out = renderStatus({}, normalizeState({ links: { abcdef: { label: "A", state: "open" } } }));
+  assert.ok(!/TF 构建号/.test(out), "/status 不该每次都刷这段说明");
 });
 
-test("/status：显示公测页测试说明（有些开发者会把版本号写在里面）", async () => {
-  const { renderStatus } = await import("../src/core.js");
+
+test("/status：不再显示静态的「测试说明」（每次都一样，是噪音）", async () => {
+  const { renderStatus, normalizeState } = await import("../src/core.js");
   const out = renderStatus({}, normalizeState({
-    links: { abcdef: { label: "某App", state: "open", desc: "v1.2.3 修复了若干问题" } },
+    links: { abcdef: { label: "某App", state: "open", desc: "恭喜你获得了内测名额~" } },
   }));
-  assert.match(out, /公测页测试说明：v1\.2\.3/, "开发者写在说明里的版本号要被展示出来");
+  assert.ok(!/测试说明/.test(out), "静态说明不该出现在状态页：\n" + out);
 });
+
 
 // ───────────────────── 时间显示（不能用 UTC）─────────────────────
 
@@ -444,8 +461,9 @@ test("/status 抬头标注了时区（不然用户不知道看到的是哪个时
   const { renderStatus, normalizeState, setDisplayTimeZone } = await import("../src/core.js");
   setDisplayTimeZone("Asia/Shanghai", 480);
   const out = renderStatus({}, normalizeState({ links: { abcdef: { label: "A", state: "open" } } }));
-  assert.match(out, /时间均为/);
-  assert.match(out, /Asia\/Shanghai/);
+  assert.match(out, /当前状态/);
+  assert.match(out, /Asia\/Shanghai/, "抬头要带时区（折进标题行，不单独占一行）");
+  assert.ok(!/时间均为/.test(out), "时区不该再单独占一行");
 });
 
 test("nowStamp：存储用 ISO UTC（不带毫秒）", async () => {
@@ -484,11 +502,79 @@ test("⭐ 回归：KV 里存着旧版 `… UTC` 时，/status 也不能再出现
     appstore: { "1": { version: "1.0", checkedAt: "2026-10-14 08:18 UTC" } },
   }));
   assert.ok(!/UTC(?!\+)/.test(out.replace(/UTC\+8/g, "")), "除抬头的 UTC+8 外不该再出现 UTC：\n" + out);
-  assert.match(out, /上次监控：2026-10-14 16:18/, "旧值应被换算成 +8 显示");
-  assert.match(out, /状态自 2026-10-14 16:18 起/, "stateSince 也要换算");
-  assert.match(out, /检查于 2026-10-14 16:18/, "appstore.checkedAt 也要换算");
-  // 注：firstSeen（"加入："那行）显示在 /apps 里，不在 /status —— 由下一条测试覆盖
+  // /status 现在用相对时间，所以旧版 UTC 串要能被正确解析成"多久之前"
+  assert.match(out, /上次监控 \d+ (分钟|小时|天)前/, "旧版 UTC 串要被解析成相对时间：\n" + out);
+  assert.match(out, /状态已保持 \d+ (分钟|小时|天)/, "stateSince 也要解析对");
 });
+
+test("列表按加入时间排（先加的在前）；中文不能靠码点当字典序", async () => {
+  const { renderApps, normalizeState } = await import("../src/core.js");
+  const out = renderApps(normalizeState({
+    links: {
+      zzzzzzzz: { label: "阿里云盘", state: "open", url: "https://x/1", firstSeen: "2026-10-14T08:19:00Z" },
+      dTUO1uyt: { label: "番茄小说", state: "open", url: "https://x/2", firstSeen: "2026-10-14T08:17:00Z" },
+      "5MWjLpYl": { label: "微信读书", state: "full", url: "https://x/3", firstSeen: "2026-10-14T08:18:00Z" },
+      nonetime: { label: "没时间的", state: "closed", url: "https://x/4" },
+    },
+  }));
+  const pos = ["番茄小说", "微信读书", "阿里云盘", "没时间的"].map((n) => out.indexOf(n));
+  assert.ok(pos.every((p) => p >= 0), "四个都该出现");
+  assert.ok(pos[0] < pos[1] && pos[1] < pos[2], "应按加入时间：番茄(17) < 微信(18) < 阿里(19)");
+  assert.ok(pos[3] > pos[2], "没有加入时间的排最后，不能插到中间");
+  // 说明为什么不用名字排：中文的 < 是码点序，不是字典序
+  assert.ok("阿里云盘" > "番茄小说", "码点序下 阿里云盘 确实排在 番茄小说 后面 —— 所以按名字排是假象");
+});
+
+
+test("departures.to 只在和我们的判断不一致时才显示（一致=噪音）", async () => {
+  const { renderStatus, normalizeState, departuresDisagrees, setDisplayTimeZone } = await import("../src/core.js");
+  setDisplayTimeZone("Asia/Shanghai", 480);
+
+  // 纯函数先定规则
+  assert.equal(departuresDisagrees("open", "open"), false, "一致不算不一致");
+  assert.equal(departuresDisagrees("open", "full"), true, "它说开、我们说满 -> 不一致");
+  assert.equal(departuresDisagrees("closed", "open"), true, "它说关、我们说开 -> 不一致");
+  assert.equal(departuresDisagrees("closed", "full"), false, "都说不能进 -> 一致");
+  assert.equal(departuresDisagrees("", "open"), false, "没状态不报");
+  assert.equal(departuresDisagrees("some-new-word", "open"), false, "认不出的状态不误报");
+
+  const mk = (dep) => normalizeState({
+    links: { abcdef: { label: "某App", state: "open", url: "https://x/join/abcdef",
+                       departures: { status: dep } } },
+  });
+  assert.ok(!/departures/.test(renderStatus({}, mk("open"))), "一致时不该出现 departures 这行");
+  assert.match(renderStatus({}, mk("closed")), /departures\.to 认为 closed/,
+    "不一致时要提醒（这是换链接的信号）");
+});
+
+test("humanAgo：确定性地验证相对时间（含旧版 UTC 串的解析）", async () => {
+  const { humanAgo, setDisplayTimeZone } = await import("../src/core.js");
+  setDisplayTimeZone("Asia/Shanghai", 480);
+  const now = new Date("2026-10-14T16:58:00Z");   // 北京时间 10-15 00:58
+
+  assert.equal(humanAgo("2026-10-14T16:57:00Z", now), "刚刚");
+  assert.equal(humanAgo("2026-10-14T16:28:00Z", now), "30 分钟前");
+  assert.equal(humanAgo("2026-10-14T08:18:00Z", now), "8 小时前");
+  assert.equal(humanAgo("2026-10-11T16:58:00Z", now), "3 天前");
+  // 旧版 UTC 显示串也要解析对（这正是老板 KV 里存着的形态）
+  assert.equal(humanAgo("2026-10-14 08:18 UTC", now), "8 小时前");
+  // 旧版"本地串"（无标记）按当前时区猜：16:18 本地 = 08:18 UTC
+  assert.equal(humanAgo("2026-10-14 16:18", now), "8 小时前");
+  // 认不出的原样返回，不能吞
+  for (const v of ["从未", "?", "刚刚"]) assert.equal(humanAgo(v, now), v);
+  assert.equal(humanAgo("", now), "");
+});
+
+test("humanDuration：状态保持了多久", async () => {
+  const { humanDuration, setDisplayTimeZone } = await import("../src/core.js");
+  setDisplayTimeZone("Asia/Shanghai", 480);
+  const now = new Date("2026-10-14T16:58:00Z");
+  assert.equal(humanDuration("2026-10-14T16:57:00Z", now), "刚刚");
+  assert.equal(humanDuration("2026-10-14T16:28:00Z", now), "30 分钟");
+  assert.equal(humanDuration("2026-10-11T16:58:00Z", now), "3 天");
+});
+
+
 
 test("⭐ 回归：/apps 里的「加入」时间同样要换算", async () => {
   const { renderApps, normalizeState, setDisplayTimeZone } = await import("../src/core.js");
@@ -496,7 +582,7 @@ test("⭐ 回归：/apps 里的「加入」时间同样要换算", async () => {
   const out = renderApps(normalizeState({
     links: { abcdef: { label: "某App", state: "open", firstSeen: "2026-10-14 08:17 UTC", sources: ["manual"] } },
   }));
-  assert.match(out, /加入：2026-10-14 16:17/);
+  assert.match(out, /加入 2026-10-14 16:17/);
   assert.ok(!/UTC/.test(out), "不该出现 UTC：" + out);
 });
 

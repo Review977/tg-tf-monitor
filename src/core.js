@@ -710,31 +710,61 @@ export async function enrichApp({ code, name = "", fetchImpl, log = () => {} } =
 }
 
 /** 监控中的 App 一览（比 /links 多出"这个 App 都盯了什么"） */
+/**
+ * 列表顺序：**按加入时间，先加的在前**（没有时间的排最后，再按码）。
+ *
+ * 为什么不按名字排：中文用 `<` 比的是**码点**，不是字典序 ——
+ * `阿里云盘`(U+963F) 会排在 `番茄`(U+756A) 后面，对人不构成"按名字排"。
+ * 要真正的拼音序得靠 `Intl.Collator("zh")`，那又要赌 Worker 的 ICU 数据（不可靠）。
+ * 按加入时间则：确定、不依赖 ICU、而且**改名字时顺序不会跳**。
+ */
+function sortCodesByLabel(state) {
+  const key = (c) => {
+    const t = parseStamp((state.links[c] || {}).firstSeen);
+    return t ? t.getTime() : Number.POSITIVE_INFINITY;
+  };
+  return Object.keys(state.links || {}).sort((a, b) => {
+    const ka = key(a), kb = key(b);
+    if (ka !== kb) return ka < kb ? -1 : 1;
+    return a < b ? -1 : a > b ? 1 : 0;
+  });
+}
+
 export function renderApps(state) {
-  const codes = Object.keys(state.links || {}).sort();
+  // 按**加入时间**排（见 sortCodesByLabel 的说明）
+  const codes = sortCodesByLabel(state);
   if (!codes.length) return "还没有监控任何 App。发 /find <名字> 找，或 /add <TestFlight 链接> 直接加。";
   const L = [`<b>监控中的 App（${codes.length} 个）</b>`];
   codes.forEach((code, i) => {
     const r = state.links[code];
+    const url = r.url || "https://testflight.apple.com/join/" + code;
     L.push("");
     L.push(`${i + 1}. <b>${esc(r.label || r.appName || code)}</b> — ${STATE_LABEL[r.state] || r.state || "未检查"}`);
-    L.push(`   join 码：<code>${esc(code)}</code>`);
-    L.push(`   链接：${esc(r.url || "https://testflight.apple.com/join/" + code)}`);
-    if (r.appName && r.appName !== r.label) L.push(`   页面上的名字：${esc(r.appName)}`);
-    L.push(`   App Store：${r.appStoreId ? esc(r.appStoreId) + (r.bundleId ? "（" + esc(r.bundleId) + "）" : "") : "<i>未关联</i>"}`);
-    L.push(`   departures.to：${r.departuresId ? esc(r.departuresId) : "<i>未关联（少一层链接轮换检测）</i>"}`);
+    L.push(`   ${esc(url)}`);
+    // 一行说清"绑了什么"：绑定决定了有没有版本告警 / 链接轮换检测
     const asv = r.appStoreId ? state.appstore[String(r.appStoreId)] : null;
+    const bits = [];
     if (asv && asv.version) {
       const d = daysAgo(asv.releaseDate);
-      // 日期只显示到"天" —— 上游万一给的是完整 ISO 时间戳，这里也要显示干净
       const day = String(asv.releaseDate || "").slice(0, 10);
-      L.push(`   App Store 正式版：${esc(asv.version)}${day ? "（" + esc(day) + " 上架" + (d === null ? "" : "，" + d + " 天前") + "）" : ""}`);
+      bits.push(`正式版 ${esc(asv.version)}${day ? "（" + esc(day.slice(5)) + " 上架" + (d === null ? "" : "，" + d + " 天前") + "）" : ""}`);
     }
-    if (r.desc) L.push(`   公测页测试说明：${esc(r.desc.slice(0, 120))}`);
-    if (r.keywords && r.keywords.length) L.push(`   发现关键词：${esc(r.keywords.slice(0, 4).join(" / "))}`);
-    L.push(`   加入：${esc(fmtStamp(r.firstSeen) || "?")}｜来源：${esc((r.sources || []).join(","))}`);
+    bits.push(r.appStoreId ? `App Store ${esc(r.appStoreId)}` : "未绑 App Store");
+    bits.push(r.departuresId ? `departures ${esc(r.departuresId)}` : "未绑 departures");
+    L.push(`   ${bits.join(" ｜ ")}`);
+    // 缺绑定压成一行说清"少了什么能力"，而不是两条各说一半
+    const missing = [];
+    if (!r.appStoreId) missing.push("版本更新告警");
+    if (!r.departuresId) missing.push("链接轮换检测");
+    if (missing.length) {
+      L.push(`   ⚠️ 没绑 ${[!r.appStoreId && "App Store", !r.departuresId && "departures"].filter(Boolean).join(" / ")} id` +
+        ` → 少了：${missing.join("、")}（重新 /add 一次可自动补）`);
+    }
+    // 「加入」保留：回答"我什么时候开始盯的"。
+    // 「来源」只在**不是** manual 时才显示 —— 自己加的 App 写"来源 manual"是废话。
+    const srcs = (r.sources || []).filter((x) => x && x !== "manual");
+    L.push(`   加入 ${esc(fmtStamp(r.firstSeen) || "?")}${srcs.length ? " ｜ 来源 " + esc(srcs.join(",")) : ""}`);
   });
-  L.push("", "加：<code>/add &lt;TestFlight链接&gt;</code>　找：<code>/find &lt;名字&gt;</code>　删：<code>/del &lt;码&gt;</code>");
   return L.join("\n");
 }
 
@@ -844,7 +874,11 @@ export function daysAgo(isoDate, now = new Date()) {
  * 而且不同运行时的默认 locale 会让输出格式漂移。所以下面会**校验输出格式**，
  * 不符合预期就自动退回固定偏移 —— 宁可少一点夏令时支持，也不能把时间显示错。
  */
-let DISPLAY_TZ = { name: "", offsetMinutes: 0, usable: false };
+// 默认就用项目默认时区（Asia/Shanghai / +8），**不是 UTC-0**。
+// 理由：入口忘了调用 setDisplayTimeZone 时，"显示成 UTC" 是个很隐蔽的错误
+// （实测踩过：renderApps 少了这一步就把 16:17 显示成 08:17）。
+// 宁可退回一个"和配置默认一致"的值，也不要退回 UTC。
+let DISPLAY_TZ = { name: "Asia/Shanghai", offsetMinutes: 480, usable: true };
 
 const TZ_FMT_OPTS = {
   year: "numeric", month: "2-digit", day: "2-digit",
@@ -971,6 +1005,77 @@ export function fmtStamp(v) {
     if (Number.isFinite(t)) return nowStr(new Date(t));
   }
   return raw;
+}
+
+/**
+ * 把**存储里的**时间戳解析回 Date。和 `fmtStamp` 覆盖同样三种形态。
+ * 旧版"本地串"没有时区标记，只能按**当前显示时区**去猜 —— 这是唯一可行的近似。
+ */
+export function parseStamp(v) {
+  const raw = String(v == null ? "" : v).trim();
+  if (!raw) return null;
+  if (ISO_RE.test(raw)) {
+    const t = Date.parse(raw);
+    return Number.isFinite(t) ? new Date(t) : null;
+  }
+  const mu = raw.match(LEGACY_UTC_RE);
+  if (mu) {
+    const t = Date.parse(`${mu[1]}T${mu[2]}:${mu[3] || "00"}Z`);
+    return Number.isFinite(t) ? new Date(t) : null;
+  }
+  const ml = raw.match(/^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2})(?::(\d{2}))?$/);
+  if (ml) {
+    const asUtc = Date.parse(`${ml[1]}T${ml[2]}:${ml[3] || "00"}Z`);
+    if (!Number.isFinite(asUtc)) return null;
+    const off = DISPLAY_TZ.usable
+      ? (offsetMinutesForName(DISPLAY_TZ.name, new Date(asUtc)) ?? DISPLAY_TZ.offsetMinutes)
+      : DISPLAY_TZ.offsetMinutes;
+    return new Date(asUtc - off * 60000);
+  }
+  return null;
+}
+
+/** 时间段的自然说法（"3 天" / "12 分钟"）。给"状态已保持…"用。 */
+export function humanDuration(v, now = new Date()) {
+  const d = parseStamp(v);
+  if (!d) return "";
+  const sec = Math.max(0, Math.floor((now.getTime() - d.getTime()) / 1000));
+  if (sec < 90) return "刚刚";
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min} 分钟`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr} 小时`;
+  return `${Math.floor(hr / 24)} 天`;
+}
+
+/**
+ * "多久之前"。状态页要回答的是"它还活着吗"，所以相对时间比精确时刻更有用；
+ * 认不出的值（"从未"、"?"）原样返回，不要吞掉。
+ */
+export function humanAgo(v, now = new Date()) {
+  const raw = String(v == null ? "" : v).trim();
+  if (!raw) return "";
+  const d = parseStamp(raw);
+  if (!d) return raw;
+  const sec = Math.floor((now.getTime() - d.getTime()) / 1000);
+  if (sec < 90) return "刚刚";
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min} 分钟前`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr} 小时前`;
+  return `${Math.floor(hr / 24)} 天前`;
+}
+
+/**
+ * departures.to 的状态和我们的判断是否一致。
+ * 只在**不一致**时才值得显示 —— 一致时它不提供任何信息，纯噪音。
+ */
+export function departuresDisagrees(dep, ourState) {
+  const d = String(dep || "").toLowerCase().trim();
+  if (!d) return false;
+  if (d === "open" || d === "available") return ourState !== "open";
+  if (d === "closed" || d === "full") return ourState === "open";
+  return false;   // 认不出来的状态不报，免得误报
 }
 
 export function tzLabel(d = new Date()) {
@@ -1181,9 +1286,7 @@ export async function runMonitor({ cfg, state, notifier, log = () => {}, fetchIm
         `<b>App Store 正式版更新</b>：${esc(cur.name)}`,
         `版本：${esc(old.version)} → <b>${esc(cur.version)}</b>`,
         `上架日期：${esc(cur.releaseDate)}`,
-        "",
-        "TF 上通常已经在测这个新版本（或更高的 beta）—— 但**TF 构建号 Apple 不公开**，",
-        "公测页上没有，只能在 TestFlight App 里看；有新构建时 TestFlight 自己会推通知。",
+        "<i>TF 上通常已经在测这个新版本（或更高的 beta）；TF 构建号 Apple 不公开，只能在 TestFlight App 里看。</i>",
         `时间：${nowStr()}`,
       ];
       if (await notifier.send(msg.join("\n"))) events++;
@@ -1369,29 +1472,37 @@ export async function runDiscovery({ cfg, state, notifier, log = () => {}, fetch
 // ─────────────────────────── 报表 ───────────────────────────
 
 export function renderStatus(cfg, state) {
-  const L = ["<b>tg-tf-monitor 当前状态</b>",
-    `<i>时间均为 ${esc(tzLabel())}</i>`,
-    `上次监控：${esc(fmtStamp(state.meta.lastCheck) || "从未")}`,
-    `上次发现扫描：${esc(fmtStamp(state.meta.lastScan) || "从未")}`, ""];
-  const codes = Object.keys(state.links || {});
-  if (!codes.length) L.push("（监控列表为空，检查配置里的 watch）");
-  for (const code of codes.sort()) {
+  const L = [
+    `<b>tg-tf-monitor 当前状态</b> <i>· ${esc(tzLabel())}</i>`,
+    `上次监控 ${esc(humanAgo(state.meta.lastCheck) || "从未")}　｜　上次发现扫描 ${esc(humanAgo(state.meta.lastScan) || "从未")}`,
+  ];
+  const codes = sortCodesByLabel(state);
+  if (!codes.length) L.push("", "（监控列表为空）");
+  const usedAppstore = new Set();
+  for (const code of codes) {
     const rec = state.links[code];
-    L.push(`· <b>${esc(rec.label || code)}</b> ${STATE_LABEL[rec.state] || rec.state || "未检查"}`);
-    L.push(`  <code>${esc(code)}</code>`);
+    L.push("");
+    L.push(`· <b>${esc(rec.label || code)}</b> — ${STATE_LABEL[rec.state] || rec.state || "未检查"}`);
     L.push(`  ${esc(rec.url || "https://testflight.apple.com/join/" + code)}`);
-    if (rec.stateSince) L.push(`  状态自 ${esc(fmtStamp(rec.stateSince))} 起`);
-    if (rec.lastChecked) L.push(`  上次检查 ${esc(fmtStamp(rec.lastChecked))}`);
-    if (rec.desc) L.push(`  公测页测试说明：${esc(rec.desc.slice(0, 160))}`);
-    if (rec.departures && rec.departures.status) L.push(`  departures.to 认为：${esc(rec.departures.status)}`);
+    if (rec.appStoreId) usedAppstore.add(String(rec.appStoreId));
+    const asv = rec.appStoreId ? state.appstore[String(rec.appStoreId)] : null;
+    if (asv && asv.version) {
+      const d = daysAgo(asv.releaseDate);
+      const day = String(asv.releaseDate || "").slice(0, 10);
+      L.push(`  正式版 ${esc(asv.version)}${day ? "（" + esc(day.slice(5)) + " 上架" + (d === null ? "" : "，" + d + " 天前") + "）" : ""}`);
+    }
+    if (rec.stateSince) L.push(`  状态已保持 ${esc(humanDuration(rec.stateSince) || "?")}`);
+    // departures 只在和我们的判断**不一致**时才显示 —— 一致时它不提供信息
+    if (rec.departures && departuresDisagrees(rec.departures.status, rec.state)) {
+      L.push(`  ⚠️ departures.to 认为 ${esc(rec.departures.status)}，和我们不一致（可能换了链接）`);
+    }
     if (rec.lastError) L.push(`  ⚠️ ${esc(rec.lastError)}`);
   }
+  // 没挂在任何监控项下的 appstore 记录才单独列（挂上了的已经在各自 App 下面）
   for (const [aid, a] of Object.entries(state.appstore || {})) {
-    L.push(`· App Store 正式版（id ${esc(aid)}）：${esc(a.version || "?")}（检查于 ${esc(fmtStamp(a.checkedAt) || "?")}）`);
+    if (usedAppstore.has(String(aid))) continue;
+    L.push("", `· App Store 正式版（id ${esc(aid)}，没挂在任何监控项下）：${esc(a.version || "?")}`);
   }
-  // 把"拿不到什么"直接写在消息里，免得每次都要重新疑惑一遍
-  L.push("", "<i>TF 构建号（TestFlight 里的版本/build）：Apple 不公开，公测页上也没有 —— " +
-    "只能在 TestFlight App 里看。有新构建时 TestFlight 自己会推通知。</i>");
   return L.join("\n");
 }
 
@@ -1436,6 +1547,10 @@ export const HELP = `<b>tg-tf-monitor 命令</b>
 
 链接状态含义：
 可加入 ✅ / 已满员 ⛔ / 已关闭 🚫 / 链接失效 ❌
+
+关于「TF 版本号」：
+TestFlight 里的构建号 Apple 不公开，公测页上也没有 —— 只能在 TestFlight App 里看。
+（App Store 正式版号 ≠ TF 构建号；有新构建时 TestFlight 自己会推通知。）
 
 加进来的 App 会被盯：链接状态、App Store 正式版号、departures.to 链接轮换；
 /scan 时也会按它自己的名字关键词去找新的 join 码。`;
@@ -1532,9 +1647,8 @@ export async function handleCommand({ cfg, state, notifier, text, chatId, log = 
     if (!rec.stateSince) rec.stateSince = nowStamp();
 
     const L = [
-      `✅ 已加入监控：<b>${esc(rec.label)}</b>`,
-      `join 码：<code>${esc(code)}</code>　状态：<b>${STATE_LABEL[e.state] || e.state}</b>`,
-      `链接：${esc(e.url)}`,
+      `✅ 已加入监控：<b>${esc(rec.label)}</b> — ${STATE_LABEL[e.state] || e.state}`,
+      esc(e.url),
       `App Store：${rec.appStoreId ? esc(rec.appStoreId) + (rec.bundleId ? "（" + esc(rec.bundleId) + "）" : "") + (rec.appStoreSource === "auto" ? " <i>自动匹配</i>" : "") : "<i>未关联</i>"}`,
       `departures.to：${rec.departuresId ? esc(rec.departuresId) + (rec.departuresSource === "auto" ? " <i>自动匹配</i>" : "") : "<i>未关联</i>"}`,
       `发现关键词：${esc((rec.keywords || []).join(" / ") || "（无）")}`,
@@ -1543,10 +1657,10 @@ export async function handleCommand({ cfg, state, notifier, text, chatId, log = 
       L.push("", "<b>需要留意</b>");
       for (const n of e.notes) L.push("· " + esc(n));
     }
-    L.push("", "现在这个 App 会被：每轮查链接状态、App Store 正式版号" +
+    L.push("", "会被盯：链接状态" +
+      (rec.appStoreId ? "、App Store 正式版号" : "") +
       (rec.departuresId ? "、departures.to 链接轮换" : "") +
-      "；<code>/scan</code> 时也会按它的关键词去找新链接。");
-    L.push("看全部：<code>/apps</code>");
+      "；<code>/scan</code> 时按它的关键词找新链接。");
     await notifier.send(L.join("\n"));
   } else if (cmd === "/apps" || cmd === "/app") {
     await notifier.send(renderApps(state));
