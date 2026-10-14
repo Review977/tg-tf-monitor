@@ -763,7 +763,9 @@ export function renderApps(state) {
     // 「加入」保留：回答"我什么时候开始盯的"。
     // 「来源」只在**不是** manual 时才显示 —— 自己加的 App 写"来源 manual"是废话。
     const srcs = (r.sources || []).filter((x) => x && x !== "manual");
-    L.push(`   加入 ${esc(fmtStamp(r.firstSeen) || "?")}${srcs.length ? " ｜ 来源 " + esc(srcs.join(",")) : ""}`);
+    // 措辞用"加入监控"而不是"加入" —— 它就在"可加入 ✅"下面，
+    // 写"加入 16:17"会被读成"16:17 加入了测试"，语义完全不同。
+    L.push(`   加入监控 ${esc(fmtStamp(r.firstSeen) || "?")}${srcs.length ? " ｜ 来源 " + esc(srcs.join(",")) : ""}`);
   });
   return L.join("\n");
 }
@@ -1169,7 +1171,10 @@ export function monitorTargets(cfg, state) {
   const out = {};
   for (const w of cfg.watch || []) {
     if (w && w.code) {
-      out[w.code] = { label: w.label || w.code, appStoreId: w.appStoreId, departuresId: w.departuresId };
+      // fromConfig 用来如实标注来源 —— 配置带进来的条目以前被写成 "manual"，
+      // 那是**不实**的：用户根本没手动加过它。
+      out[w.code] = { label: w.label || w.code, appStoreId: w.appStoreId,
+                      departuresId: w.departuresId, fromConfig: true };
     }
   }
   for (const [code, rec] of Object.entries(state.links || {})) {
@@ -1198,7 +1203,14 @@ export async function runMonitor({ cfg, state, notifier, log = () => {}, fetchIm
     const rec = (state.links[code] = state.links[code] || {});
     if (!rec.firstSeen) rec.firstSeen = nowStamp();
     if (!rec.label) rec.label = meta.label;
-    if (!rec.sources) rec.sources = ["manual"];
+    if (!rec.sources) {
+      rec.sources = [meta.fromConfig ? "config" : "manual"];
+    } else if (meta.fromConfig && rec.sources.length === 1 && rec.sources[0] === "manual") {
+      // 旧版本把"配置 watch 带进来的"也写成了 manual（不实）。这里纠正一次：
+      // 只影响展示用的"来源"，且只在"就一个 manual"时才动，不会覆盖真实的手动记录
+      // （用户手动 /add 过的会带上别的标记或保持 manual 与其他来源并存）。
+      rec.sources = ["config"];
+    }
     if (meta.appStoreId) rec.appStoreId = meta.appStoreId;
     if (meta.departuresId) rec.departuresId = meta.departuresId;
 

@@ -233,7 +233,7 @@ test("/apps：列出每个 App 都盯了什么（新版式：一行说清绑定�
   assert.match(out, /正式版 7\.3\.9/);
   assert.match(out, /App Store 1468454200/);
   assert.match(out, /departures 16645/);
-  assert.match(out, /加入 2026-10-14 16:17/, "加入时间要显示（且是本地时区）");
+  assert.match(out, /加入监控 2026-10-14 16:17/, "加入监控的时间要显示（且是本地时区）");
   // 明确不该出现的（这些是上一版的噪音）
   assert.ok(!/join 码/.test(out), "join 码和链接重复，应删掉");
   assert.ok(!/页面上的名字/.test(out), "页面上的名字是噪音");
@@ -526,6 +526,40 @@ test("列表按加入时间排（先加的在前）；中文不能靠码点当�
 });
 
 
+test("旧记录纠正：配置带的条目若被旧版写成 manual，要纠正成 config（只动纯 manual）", async () => {
+  const { monitorTargets } = await import("../src/core.js");
+  const cfg = { watch: [{ code: "dTUO1uyt", label: "番茄小说" }] };
+  // 旧版写下的不实记录
+  const st = { links: { dTUO1uyt: { label: "番茄小说", sources: ["manual"] },
+                        abcdef: { label: "手加的", sources: ["manual"] } } };
+  const t = monitorTargets(cfg, st);
+  // 复现 runMonitor 里那段纠正逻辑（不联网，直接照抄判定）
+  for (const [code, meta] of Object.entries(t)) {
+    const rec = st.links[code] || (st.links[code] = {});
+    if (!rec.sources) rec.sources = [meta.fromConfig ? "config" : "manual"];
+    else if (meta.fromConfig && rec.sources.length === 1 && rec.sources[0] === "manual") rec.sources = ["config"];
+  }
+  assert.deepEqual(st.links.dTUO1uyt.sources, ["config"], "配置带进来的要纠正成 config");
+  assert.deepEqual(st.links.abcdef.sources, ["manual"], "不在配置里的不该被动");
+});
+
+test("来源要如实：配置 watch 带进来的标 config，不是 manual（以前写 manual 是不实）", async () => {
+  const { monitorTargets } = await import("../src/core.js");
+  const cfg = { watch: [{ code: "dTUO1uyt", label: "番茄小说" }] };
+  const t = monitorTargets(cfg, { links: { abcdef: { label: "别的" } } });
+  assert.equal(t.dTUO1uyt.fromConfig, true, "配置来的要标出来");
+  assert.equal(t.abcdef.fromConfig, undefined, "state 里已有的不该被标成配置来的");
+});
+
+test("「加入」这个措辞必须写清是「加入监控」——它就在「可加入 ✅」下面，容易被读成加入了测试", async () => {
+  const { renderApps, normalizeState } = await import("../src/core.js");
+  const out = renderApps(normalizeState({
+    links: { abcdef: { label: "某App", state: "open", url: "https://x/1", firstSeen: "2026-10-14T08:17:00Z" } },
+  }));
+  assert.match(out, /加入监控 2026-10-14 16:17/);
+  assert.ok(!/^\s*加入 2026/m.test(out), "不能只写「加入」");
+});
+
 test("departures.to 只在和我们的判断不一致时才显示（一致=噪音）", async () => {
   const { renderStatus, normalizeState, departuresDisagrees, setDisplayTimeZone } = await import("../src/core.js");
   setDisplayTimeZone("Asia/Shanghai", 480);
@@ -582,7 +616,7 @@ test("⭐ 回归：/apps 里的「加入」时间同样要换算", async () => {
   const out = renderApps(normalizeState({
     links: { abcdef: { label: "某App", state: "open", firstSeen: "2026-10-14 08:17 UTC", sources: ["manual"] } },
   }));
-  assert.match(out, /加入 2026-10-14 16:17/);
+  assert.match(out, /加入监控 2026-10-14 16:17/);
   assert.ok(!/UTC/.test(out), "不该出现 UTC：" + out);
 });
 
