@@ -171,19 +171,78 @@ https://<项目>.vercel.app/api/run?key=<ADMIN_KEY>&mode=all
 
 ## 命令（在 TG 里发给 bot）
 
+**加 App**
+
 | 命令 | 作用 |
 |---|---|
-| `/status` | 当前监控状态、上次检查/扫描时间、departures.to 的交叉结论 |
+| `/find <名字>` | 按名字搜：App Store id / bundle id、departures.to 的 app id、tfstore 上的 TF 码（带可直接复制的 `/add`） |
+| `/add <TestFlight链接> [名称] [appstore=<id>] [departures=<id>]` | 加一个 App 进监控，**元数据自动补齐** |
+| `/apps` | 看监控中的 App 各自都盯了什么 |
+| `/del <码>` | 移出监控 |
+
+**看状态 / 运维**
+
+| 命令 | 作用 |
+|---|---|
+| `/status` | 当前监控状态、上次检查/扫描时间 |
+| `/links` | 列出已知 join 码（监控中的 + 历史发现） |
 | `/check` | 立刻跑一轮监控 |
 | `/scan` | 立刻跑一轮发现扫描 |
-| `/links` | 列出所有已知 join 码（监控中的 + 历史发现） |
-| `/add <码或链接> [备注]` | 加入监控 |
-| `/del <码>` | 移出监控 |
 | `/sources` | 查看发现源与关键词配置 |
 | `/test` | 发一条测试消息 |
 | `/help` | 帮助 |
 
 只响应 `TG_CHAT_ID` 那个会话发来的命令，别人的命令直接忽略。
+
+### 怎么加一个新 App
+
+```
+/find 微信读书
+```
+
+会给出三个来源的结果。看到 tfstore 上有码，直接复制它给的命令：
+
+```
+/add 5MWjLpYl 微信读书
+```
+
+bot 会自己去补齐并回你（下面是**真实跑出来的输出**）：
+
+```
+✅ 已加入监控：微信读书
+join 码：5MWjLpYl　状态：已满员 ⛔
+App Store：952059546（com.tencent.weread） 自动匹配
+departures.to：21038 自动匹配
+发现关键词：微信读书 / com.tencent.weread
+```
+
+加完之后这个 App 会被盯四件事：
+
+1. **链接状态** —— 每轮轮询 join 页
+2. **App Store 正式版号** —— 自动关联了 id 才有
+3. **departures.to 链接轮换** —— 自动关联了 id 才有（开发者换码时这里会先变）
+4. **`/scan` 时按它自己的关键词找新码** —— 关键词从应用名自动派生，并进发现过滤集
+
+**自动补齐的三个来源**（都实测可用）：
+
+| 来源 | 拿到什么 |
+|---|---|
+| join 页本身 | 真实应用名、当前状态、文案指纹 |
+| `itunes.apple.com/search` | App Store id、bundle id |
+| `departures.to/search?searchTerm=` | departures.to 的 app id |
+
+> ⚠️ 第三个的来源参数名是 `searchTerm`，**不是 `q`** —— `?q=` 会被静默忽略、返回默认列表，
+> 看着像"这站搜不了"。这是实测出来的（文档里没写）。
+
+⚠️ **认不准就不填，不硬猜** —— 猜错 App Store id 会让"正式版更新"告警张冠李戴，比不填更糟。
+匹配不到时它会留空并说明原因，可以用 `appstore=` / `departures=` 手动指定：
+
+```
+/add 5MWjLpYl 微信读书 appstore=952059546 departures=21038
+```
+
+⚠️ **「确实没有」和「这次查失败」是分开报的** —— 前者可以安心不填；
+后者会提示"查询失败，可稍后重发 /add 补上"，免得你以为这 App 不在 App Store。
 
 ---
 
@@ -243,13 +302,15 @@ TG 频道可用（`@testflight` / `@TestFlightApps` 每次各约 15 个 join 码
 
 ```bash
 node build.mjs        # 拼出 dist/worker.js（会检查撞名 + 语法 + export default 唯一）
-node --test           # 92 项测试
+node --test           # 116 项测试
 node bench.mjs        # CPU 基准（回答"10ms 够不够"）
 node cli.mjs selftest # 联网：拿 4 个已知状态的 join 码验证判定
+node cli.mjs find 微信读书   # 联网：试 /find
+node cli.mjs add <链接>     # 联网：试 /add 的元数据自动补齐
 node cli.mjs check    # 联网：真实跑一轮（默认只打印不发）
 ```
 
-测试覆盖（**92 项全过**）：
+测试覆盖（**116 项全过**）：
 
 | 组 | 内容 |
 |---|---|
@@ -260,6 +321,7 @@ node cli.mjs check    # 联网：真实跑一轮（默认只打印不发）
 | 消息安全 | 告警被 Telegram 拒收 = **静默漏报**。发前校验 HTML（白名单标签 + 配对 + 禁裸 `<` 与未转义 `&`），超长按行截断，不合法退回纯文本 |
 | 入口层 | 用桩 fetch + 桩 KV 把整个 Worker 跑一遍：Cron 分派、`/run` 鉴权、Webhook secret 校验、非授权会话忽略、`/scan` 真跑发现源、`/set-webhook` 带 secret_token |
 | **产物一致性** | 同一套入口断言对 `src/worker.js` **和 `dist/worker.js` 各跑一遍** —— 保证"你要粘贴的那个包"是实际执行过的 |
+| **加 App 链路** | 三个自动查询源的解析、元数据补齐、**认不准不硬猜**、查失败与没搜到的区分、`/add` `/apps` `/find` 全流程、加完后关键词进发现过滤 |
 | Vercel | 五个入口的鉴权/报错/成功路径；`CRON_SECRET` 放行、**不设时靠 `x-vercel-cron-schedule` 兜底且配了就收紧**；Upstash 读写与坏数据兜底 |
 
 ---
@@ -295,7 +357,7 @@ dist/worker.js     单文件构建产物 —— 粘进 Cloudflare 控制台的�
 build.mjs          构建（撞名检查 + 语法检查 + export default 唯一性检查）
 bench.mjs          CPU 基准
 cli.mjs            本地调试 CLI（可选，部署不需要）
-test/              92 项测试
+test/              116 项测试
 ```
 
 **逻辑只有一份**：平台差异全部收敛在 `src/worker.js` / `api/*.js` 和 storage 适配器里，

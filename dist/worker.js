@@ -11,7 +11,7 @@
  * 用法：整个文件贴进 Cloudflare 控制台的 Worker 编辑器即可。
  * 该产物已被 test/handler.test.mjs 实际 import 并跑过断言。
  *
- * 源码指纹（sha256 前 16 位）：c523a2e7a872374a
+ * 源码指纹（sha256 前 16 位）：0f96871bb575e714
  * ⚠️ 这里刻意**不放构建时间** —— 放了构建就不可复现，
  *    CI 里"产物必须与源码同步"那条检查会永远失败（这是被 CI 抓出来的）。
  */
@@ -576,6 +576,257 @@ async function probeAppstore(appId, opts = {}) {
   }
 }
 
+/**
+ * 按名字搜 App Store（拿 App Store id 与 bundle id）。
+ *
+ * 返回 `{ hits, error }` 而不是裸数组 —— 必须能区分
+ * **「确实没这个 App」**和**「这次查询失败了」**：
+ * 前者可以安心不填，后者若也说成"没搜到"，用户会误以为这 App 不在 App Store。
+ */
+async function probeItunesSearch(term, opts = {}) {
+  const url = "https://itunes.apple.com/search?term=" + encodeURIComponent(term) +
+    "&country=cn&entity=software&limit=8";
+  const [st, text] = await httpGet(url, opts);
+  if (st !== 200) return { hits: [], error: st === 0 ? text : "HTTP " + st };
+  try {
+    const hits = (JSON.parse(text).results || []).map((r) => ({
+      trackId: r.trackId,
+      trackName: r.trackName || "",
+      bundleId: r.bundleId || "",
+      version: r.version || "",
+      url: r.trackViewUrl || "",
+    }));
+    return { hits, error: "" };
+  } catch (e) {
+    return { hits: [], error: "解析失败 " + (e && e.message) };
+  }
+}
+
+/**
+ * 按名字搜 departures.to。
+ * ⚠️ 参数名是 `searchTerm`（**不是 `q`**）—— `?q=` 会被静默忽略、返回默认列表，
+ * 看着像"这站搜不了"，其实是参数名错了。这条是实测出来的。
+ */
+async function probeDeparturesSearch(term, opts = {}) {
+  const url = "https://departures.to/search?searchTerm=" + encodeURIComponent(term);
+  const [st, text] = await httpGet(url, opts);
+  if (st !== 200) return { hits: [], error: st === 0 ? text : "HTTP " + st };
+  const hits = [];
+  const re = /<a href="https:\/\/departures\.to\/apps\/(\d+)[^"]*"[^>]*>[\s\S]*?<h3[^>]*>([\s\S]*?)<span/g;
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    const name = stripTags(m[2]);
+    if (name) hits.push({ appId: m[1], name, page: "https://departures.to/apps/" + m[1] });
+  }
+  return { hits, error: "" };
+}
+
+/**
+ * 从应用名派生"发现"用的关键词。
+ * 例："番茄小说 - 热门短剧全本小说电子书阅读器" → ["番茄小说", "热门短剧…", 全名]
+ * 这样新加的 App 才会被 /scan 的各发现源捞到，而不是只认配置里那一套关键词。
+ */
+function deriveKeywords(name, bundleId) {
+  const out = new Set();
+  const n = String(name || "").trim();
+  if (n) {
+    out.add(n);
+    for (const seg of n.split(/[\-—–:：|(（\[【/,，]/)) {
+      const s = seg.trim();
+      if (s.length >= 2 && s.length <= 24) out.add(s);
+    }
+  }
+  if (bundleId) out.add(String(bundleId));
+  return [...out].slice(0, 4);
+}
+
+function nameMatch(a, b) {
+  const x = String(a || "").trim().toLowerCase();
+  const y = String(b || "").trim().toLowerCase();
+  if (!x || !y) return 0;
+  if (x === y) return 3;                                        // 完全一致
+  if (x.startsWith(y) || y.startsWith(x)) return 2;             // 一个是另一个的前缀
+  const head = x.split(/[\-—–:：|(（\[【 ]/)[0].trim();
+  if (head.length >= 3 && y.includes(head)) return 1;           // 首段命中
+  return 0;
+}
+
+/**
+ * 给一个 join 码补齐"监控一个 App"要的元数据。
+ *
+ * 三个来源全自动（都实测可用）：
+ *   · join 页本身      → 真实应用名、当前状态
+ *   · iTunes 搜索      → App Store id（用来盯正式版号）、bundle id
+ *   · departures 搜索  → departures.to 的 app id（用来盯**链接轮换**）
+ *
+ * 认不准时**不硬猜** —— 留空并在 notes 里说明，让用户用 appstore= / departures= 手动指定。
+ * 猜错 App Store id 会让"正式版更新"告警张冠李戴，比不填更糟。
+ */
+async function enrichApp({ code, name = "", fetchImpl, log = () => {} } = {}) {
+  const info = await probeJoin(code, { fetchImpl });
+  const appName = info.appName || info.title || name || "";
+  const term = (name || appName || "").trim();
+  const out = {
+    code, state: info.state, url: info.url, appName,
+    desc: info.desc, descHash: info.descHash, checkedAt: info.checkedAt,
+    appStoreId: null, bundleId: "", appStoreName: "",
+    departuresId: null, departuresName: "",
+    keywords: deriveKeywords(appName, ""), notes: [],
+  };
+  if (!term) {
+    out.notes.push("页面里没读到应用名，关键词留空（可手动给：/add <码> <名称>）");
+    return out;
+  }
+
+  // ── iTunes：App Store id + bundle id ──
+  try {
+    const { hits, error } = await probeItunesSearch(term, { fetchImpl });
+    if (error) out.notes.push(`iTunes 查询失败（${error}）→ 这次没填 App Store id，可以稍后重发 /add 补上`);
+    let best = null, bestScore = 0;
+    for (const h of hits) {
+      const s = nameMatch(h.trackName, appName || term);
+      if (s > bestScore) { best = h; bestScore = s; }
+    }
+    if (best && bestScore >= 1) {
+      out.appStoreId = best.trackId;
+      out.bundleId = best.bundleId;
+      out.appStoreName = best.trackName;
+      out.keywords = deriveKeywords(appName, best.bundleId);
+      if (bestScore < 3) out.notes.push(`App Store 那条是近似名匹配的：${best.trackName}（不确定就核对一下）`);
+    } else if (hits.length) {
+      out.notes.push(`iTunes 搜到 ${hits.length} 条但都不像（第一条：${hits[0].trackName}）→ 没填 App Store id`);
+    } else if (!error) {
+      out.notes.push("iTunes 确实没搜到 → 没填 App Store id（可手动指定 appstore=<id>）");
+    }
+  } catch (e) {
+    out.notes.push("iTunes 搜索失败：" + (e && e.message));
+  }
+
+  // ── departures.to：app id（有它才能盯"链接轮换"）──
+  try {
+    const { hits, error } = await probeDeparturesSearch(appName || term, { fetchImpl });
+    if (error) out.notes.push(`departures.to 查询失败（${error}）→ 这次没填 departures id`);
+    let best = null, bestScore = 0;
+    for (const h of hits) {
+      const s = nameMatch(h.name, appName || term);
+      if (s > bestScore) { best = h; bestScore = s; }
+    }
+    if (best && bestScore >= 1) {
+      out.departuresId = /^\d+$/.test(best.appId) ? Number(best.appId) : best.appId;
+      out.departuresName = best.name;
+      if (bestScore < 3) out.notes.push(`departures.to 那条是近似名匹配的：${best.name}（不确定就核对一下）`);
+    } else if (hits.length) {
+      out.notes.push(`departures.to 搜到 ${hits.length} 条但都不像（第一条：${hits[0].name}）→ 没填 departures id`);
+    } else if (!error) {
+      out.notes.push("departures.to 没收录这个 App → 没填 departures id（不影响链接状态监控，只是少一层轮换检测）");
+    }
+  } catch (e) {
+    out.notes.push("departures.to 搜索失败：" + (e && e.message));
+  }
+
+  log(`  补齐：appStoreId=${out.appStoreId || "无"} bundle=${out.bundleId || "无"} departuresId=${out.departuresId || "无"}`);
+  return out;
+}
+
+/** 监控中的 App 一览（比 /links 多出"这个 App 都盯了什么"） */
+function renderApps(state) {
+  const codes = Object.keys(state.links || {}).sort();
+  if (!codes.length) return "还没有监控任何 App。发 /find <名字> 找，或 /add <TestFlight 链接> 直接加。";
+  const L = [`<b>监控中的 App（${codes.length} 个）</b>`];
+  codes.forEach((code, i) => {
+    const r = state.links[code];
+    L.push("");
+    L.push(`${i + 1}. <b>${esc(r.label || r.appName || code)}</b> — ${STATE_LABEL[r.state] || r.state || "未检查"}`);
+    L.push(`   join 码：<code>${esc(code)}</code>`);
+    L.push(`   链接：${esc(r.url || "https://testflight.apple.com/join/" + code)}`);
+    if (r.appName && r.appName !== r.label) L.push(`   页面上的名字：${esc(r.appName)}`);
+    L.push(`   App Store：${r.appStoreId ? esc(r.appStoreId) + (r.bundleId ? "（" + esc(r.bundleId) + "）" : "") : "<i>未关联</i>"}`);
+    L.push(`   departures.to：${r.departuresId ? esc(r.departuresId) : "<i>未关联（少一层链接轮换检测）</i>"}`);
+    if (r.keywords && r.keywords.length) L.push(`   发现关键词：${esc(r.keywords.slice(0, 4).join(" / "))}`);
+    L.push(`   加入：${esc(r.firstSeen || "?")}｜来源：${esc((r.sources || []).join(","))}`);
+  });
+  L.push("", "加：<code>/add &lt;TestFlight链接&gt;</code>　找：<code>/find &lt;名字&gt;</code>　删：<code>/del &lt;码&gt;</code>");
+  return L.join("\n");
+}
+
+/**
+ * /find —— 按名字查一个 App 的线索，让用户知道能不能加、加哪个。
+ * 三个来源：iTunes（App Store id）、departures.to（轮换检测用）、tfstore（TF 码）
+ */
+async function findApp({ state, query, fetchImpl, log = () => {} }) {
+  const term = String(query || "").trim();
+  if (!term) return "用法：<code>/find &lt;App 名字或关键词&gt;</code>";
+
+  const [it, dp, tfs] = await Promise.all([
+    probeItunesSearch(term, { fetchImpl }).catch((e) => ({ hits: [], error: e.message })),
+    probeDeparturesSearch(term, { fetchImpl }).catch((e) => ({ hits: [], error: e.message })),
+    probeTfstore(term, { fetchImpl }).catch(() => []),
+  ]);
+  const itunes = it.hits || [];
+  const deps = dp.hits || [];
+  log(`  /find「${term}」iTunes=${itunes.length} departures=${deps.length} tfstore=${tfs.length}` +
+    (it.error ? ` iTunes错误=${it.error}` : "") + (dp.error ? ` departures错误=${dp.error}` : ""));
+
+  const L = [`<b>「${esc(term)}」的搜索结果</b>`];
+  const watched = new Set(Object.keys(state.links || {}));
+
+  if (itunes.length) {
+    L.push("", "<b>App Store</b>");
+    for (const a of itunes.slice(0, 4)) {
+      L.push(`· ${esc(a.trackName)}`);
+      L.push(`  id <code>${esc(a.trackId)}</code>${a.bundleId ? "　bundle <code>" + esc(a.bundleId) + "</code>" : ""}　v${esc(a.version)}`);
+    }
+  } else {
+    L.push("", it.error ? `App Store：查询失败（${esc(it.error)}），稍后重试` : "App Store：没搜到");
+  }
+
+  if (tfs.length) {
+    L.push("", "<b>tfstore 上有 TestFlight 的</b>");
+    for (const t of tfs.slice(0, 5)) {
+      const mark = watched.has(t.code) ? "（已在监控）" : "";
+      L.push(`· ${esc(t.appName)}${mark}`);
+      L.push(`  <code>${esc(t.code)}</code> → 加：<code>/add ${esc(t.code)}</code>`);
+    }
+  } else {
+    L.push("", "tfstore：没有（它只收录一部分 App，不代表没有 TF 版）");
+  }
+
+  if (deps.length) {
+    L.push("", "<b>departures.to 收录的</b>（有它就能自动盯链接轮换）");
+    for (const dp of deps.slice(0, 4)) {
+      L.push(`· ${esc(dp.name)} — app id <code>${esc(dp.appId)}</code>`);
+    }
+  } else {
+    L.push("", dp.error
+      ? `departures.to：查询失败（${esc(dp.error)}）`
+      : "departures.to：没收录（不影响状态监控，只是少一层轮换检测）");
+  }
+
+  L.push("", "<b>怎么加</b>",
+    "· 已经有 TestFlight 链接 → <code>/add &lt;链接&gt;</code>（App Store id 与 departures id 会自动补齐）",
+    "· 想手动指定 → <code>/add &lt;链接&gt; 名称 appstore=&lt;id&gt; departures=&lt;id&gt;</code>");
+  return L.join("\n");
+}
+
+/** 关键词 = 全局配置 ∪ 各在监控 App 派生的（新加的 App 才会被 /scan 捞到） */
+function effectiveKeywords(cfg, state) {
+  const set = new Set(cfg.keywords || []);
+  for (const rec of Object.values(state.links || {})) {
+    for (const k of rec.keywords || []) set.add(k);
+  }
+  return [...set];
+}
+
+/** 发现扫描用的 tfstore 查询词 = 配置里的 ∪ 各在监控 App 的名字（带上限，别把请求数打爆） */
+function effectiveTfstoreQueries(cfg, state, cap = 8) {
+  const out = [...((cfg.discovery && cfg.discovery.tfstoreQueries) || [])];
+  for (const rec of Object.values(state.links || {})) {
+    const n = String(rec.appName || rec.label || "").split(/[\-—–:：|(（\[【]/)[0].trim();
+    if (n && n.length >= 2 && n.length <= 24 && !out.includes(n)) out.push(n);
+  }
+  return out.slice(0, cap);
+}
+
 // ─────────────────────────── 时间 ───────────────────────────
 
 function nowStr(d = new Date()) {
@@ -848,6 +1099,12 @@ async function runDiscovery({ cfg, state, notifier, log = () => {}, fetchImpl, o
   const d = cfg.discovery || {};
   let events = 0;
 
+  // 关键词与 tfstore 查询词都要**并上各在监控 App 自己派生的** ——
+  // 否则新加一个 App，发现源仍然只按番茄那套词过滤，等于白加。
+  const kws = effectiveKeywords(cfg, state);
+  const isRelevant = (t) => relevant({ keywords: kws }, t);
+  log(`  关键词 ${kws.length} 个：${kws.slice(0, 6).join(" / ")}${kws.length > 6 ? " …" : ""}`);
+
   const sources = [];
   const depIds = new Set(d.departuresApps || []);
   for (const rec of Object.values(state.links || {})) {
@@ -872,7 +1129,7 @@ async function runDiscovery({ cfg, state, notifier, log = () => {}, fetchImpl, o
       },
     });
   }
-  for (const q of d.tfstoreQueries || []) {
+  for (const q of effectiveTfstoreQueries(cfg, state)) {
     sources.push({
       name: `tfstore:${q}`,
       run: async () => {
@@ -880,7 +1137,7 @@ async function runDiscovery({ cfg, state, notifier, log = () => {}, fetchImpl, o
         const hits = await probeTfstore(q, { fetchImpl });
         log(`  tfstore「${q}」→ ${hits.length} 条`);
         for (const h of hits) {
-          if (relevant(cfg, h.appName)) n += await registerDiscovery({ cfg, state, notifier, log, fetchImpl }, h);
+          if (isRelevant(h.appName)) n += await registerDiscovery({ cfg, state, notifier, log, fetchImpl }, h);
         }
         return n;
       },
@@ -895,7 +1152,7 @@ async function runDiscovery({ cfg, state, notifier, log = () => {}, fetchImpl, o
           const hits = await probeBing(q, { fetchImpl });
           log(`  Bing「${q}」→ ${hits.length} 条含 join 码`);
           for (const h of hits) {
-            if (relevant(cfg, (h.context || "") + " " + (h.appName || ""))) {
+            if (isRelevant((h.context || "") + " " + (h.appName || ""))) {
               n += await registerDiscovery({ cfg, state, notifier, log, fetchImpl }, h);
             }
           }
@@ -911,7 +1168,7 @@ async function runDiscovery({ cfg, state, notifier, log = () => {}, fetchImpl, o
           const hits = await probeSo360(q, { fetchImpl });
           log(`  360搜索「${q}」→ ${hits.length} 条含 join 码`);
           for (const h of hits) {
-            if (relevant(cfg, (h.context || "") + " " + (h.appName || ""))) {
+            if (isRelevant((h.context || "") + " " + (h.appName || ""))) {
               n += await registerDiscovery({ cfg, state, notifier, log, fetchImpl }, h);
             }
           }
@@ -928,7 +1185,7 @@ async function runDiscovery({ cfg, state, notifier, log = () => {}, fetchImpl, o
         const hits = await probeTgChannel(ch, { fetchImpl });
         log(`  TG @${ch} → ${hits.length} 条含 join 码`);
         for (const h of hits) {
-          if (relevant(cfg, h.context || "")) {
+          if (isRelevant(h.context || "")) {
             n += await registerDiscovery({ cfg, state, notifier, log, fetchImpl }, h);
           }
         }
@@ -1002,18 +1259,30 @@ function renderLinks(state) {
 }
 
 const HELP = `<b>tg-tf-monitor 命令</b>
+
+<b>加 App</b>
+/find &lt;名字&gt; — 按名字搜 App Store id / departures.to / tfstore 上的 TF 码
+/add &lt;TestFlight链接&gt; [名称] [appstore=&lt;id&gt;] [departures=&lt;id&gt;]
+    加一个 App 进监控。App Store id、bundle id、departures.to id 会**自动补齐**
+/apps — 看监控中的 App 都盯了什么
+/del &lt;码&gt; — 移出监控
+
+<b>看状态</b>
 /status — 当前监控状态
+/links — 列出已知 join 码（含历史发现）
 /check — 立刻跑一轮监控
 /scan — 立刻跑一轮发现扫描
-/links — 列出已知 join 码
-/add &lt;码或链接&gt; [备注] — 加入监控
-/del &lt;码&gt; — 移出监控
-/sources — 查看发现源配置
+/sources — 查看发现源与关键词配置
+
+<b>其它</b>
 /test — 发一条测试消息
 /help — 这条帮助
 
 链接状态含义：
-可加入 ✅ / 已满员 ⛔ / 已关闭 🚫 / 链接失效 ❌`;
+可加入 ✅ / 已满员 ⛔ / 已关闭 🚫 / 链接失效 ❌
+
+加进来的 App 会被盯：链接状态、App Store 正式版号、departures.to 链接轮换；
+/scan 时也会按它自己的名字关键词去找新的 join 码。`;
 
 // ─────────────────────────── 命令 ───────────────────────────
 
@@ -1050,7 +1319,7 @@ async function handleCommand({ cfg, state, notifier, text, chatId, log = () => {
     await notifier.send([
       "<b>发现源配置</b>",
       `departures.to apps：${esc(JSON.stringify(d.departuresApps || []))}`,
-      `tfstore 查询：${esc(JSON.stringify(d.tfstoreQueries || []))}`,
+      `tfstore 查询：${esc(JSON.stringify(effectiveTfstoreQueries(cfg, state)))}`,
       `网页搜索查询：${esc(JSON.stringify(d.webQueries || []))}`,
       `  引擎：Bing=${esc(d.useBing !== false)} / 360=${esc(d.useSo360 !== false)}`,
       `TG 频道：${esc(JSON.stringify(d.telegramChannels || []))}`,
@@ -1059,25 +1328,79 @@ async function handleCommand({ cfg, state, notifier, text, chatId, log = () => {
       `自动监控新发现：${esc(cfg.autoWatchDiscovered)}`,
       `监控间隔：${esc(cfg.intervalMinutes)} 分钟`,
     ].join("\n"));
-  } else if (cmd === "/add" && parts.length >= 2) {
+  } else if (cmd === "/add") {
+    if (parts.length < 2) {
+      await notifier.send("用法：<code>/add &lt;TestFlight链接或join码&gt; [名称] [appstore=&lt;id&gt;] [departures=&lt;id&gt;]</code>\n" +
+        "不知道链接？先发 <code>/find &lt;App名字&gt;</code>");
+      return;
+    }
     const arg = parts[1].trim();
     const code = firstJoinCode(arg) || arg;
     if (!JOIN_CODE_RE.test(code)) {
-      await notifier.send(`看不懂这个 join 码：${esc(arg)}`);
+      await notifier.send(
+        `这看着不是 TestFlight join 码：${esc(arg)}\n` +
+        `· 想按名字找 → <code>/find ${esc(arg.slice(0, 30))}</code>\n` +
+        `· join 码长这样：<code>dTUO1uyt</code>（6-14 位字母数字）`
+      );
       return;
     }
-    const label = parts.slice(2).join(" ") || code;
-    const info = await probeJoin(code, { fetchImpl });
+
+    // 名称与可选的手动指定：/add <码> 名称 appstore=123 departures=456
+    const opts = {};
+    const nameParts = [];
+    for (const t of parts.slice(2)) {
+      const m = /^(appstore|departures|bundle)=(.+)$/i.exec(t);
+      if (m) opts[m[1].toLowerCase()] = m[2].trim();
+      else nameParts.push(t);
+    }
+    const givenName = nameParts.join(" ").trim();
+
+    await notifier.send(`正在补齐 <code>${esc(code)}</code> 的信息（探测链接 + 查 App Store + 查 departures.to）…`);
+
+    const e = await enrichApp({ code, name: givenName, fetchImpl, log });
     const rec = (state.links[code] = state.links[code] || {});
     Object.assign(rec, {
-      label, firstSeen: rec.firstSeen || nowStr(),
+      label: givenName || e.appName || code,
+      appName: e.appName || rec.appName || "",
+      firstSeen: rec.firstSeen || nowStr(),
       sources: [...new Set([...(rec.sources || []), "manual"])],
-      state: info.state, url: info.url, appName: info.appName,
-      desc: info.desc, descHash: info.descHash, lastChecked: info.checkedAt,
+      state: e.state, url: e.url, desc: e.desc, descHash: e.descHash, lastChecked: e.checkedAt,
+      keywords: e.keywords || [],
     });
+    if (opts.appstore) { rec.appStoreId = /^\d+$/.test(opts.appstore) ? Number(opts.appstore) : opts.appstore; rec.appStoreSource = "manual"; }
+    else if (e.appStoreId) { rec.appStoreId = e.appStoreId; rec.appStoreSource = "auto"; }
+    if (opts.bundle) rec.bundleId = opts.bundle;
+    else if (e.bundleId) rec.bundleId = e.bundleId;
+    if (opts.departures) { rec.departuresId = /^\d+$/.test(opts.departures) ? Number(opts.departures) : opts.departures; rec.departuresSource = "manual"; }
+    else if (e.departuresId) { rec.departuresId = e.departuresId; rec.departuresSource = "auto"; }
     if (!rec.stateSince) rec.stateSince = nowStr();
-    await notifier.send(`已加入监控：<code>${esc(code)}</code>（${STATE_LABEL[info.state] || info.state}）` +
-      (info.appName ? `，应用：${esc(info.appName)}` : ""));
+
+    const L = [
+      `✅ 已加入监控：<b>${esc(rec.label)}</b>`,
+      `join 码：<code>${esc(code)}</code>　状态：<b>${STATE_LABEL[e.state] || e.state}</b>`,
+      `链接：${esc(e.url)}`,
+      `App Store：${rec.appStoreId ? esc(rec.appStoreId) + (rec.bundleId ? "（" + esc(rec.bundleId) + "）" : "") + (rec.appStoreSource === "auto" ? " <i>自动匹配</i>" : "") : "<i>未关联</i>"}`,
+      `departures.to：${rec.departuresId ? esc(rec.departuresId) + (rec.departuresSource === "auto" ? " <i>自动匹配</i>" : "") : "<i>未关联</i>"}`,
+      `发现关键词：${esc((rec.keywords || []).join(" / ") || "（无）")}`,
+    ];
+    if (e.notes && e.notes.length) {
+      L.push("", "<b>需要留意</b>");
+      for (const n of e.notes) L.push("· " + esc(n));
+    }
+    L.push("", "现在这个 App 会被：每轮查链接状态、App Store 正式版号" +
+      (rec.departuresId ? "、departures.to 链接轮换" : "") +
+      "；<code>/scan</code> 时也会按它的关键词去找新链接。");
+    L.push("看全部：<code>/apps</code>");
+    await notifier.send(L.join("\n"));
+  } else if (cmd === "/apps" || cmd === "/app") {
+    await notifier.send(renderApps(state));
+  } else if (cmd === "/find") {
+    if (parts.length < 2) {
+      await notifier.send("用法：<code>/find &lt;App 名字或关键词&gt;</code>");
+      return;
+    }
+    await notifier.send(`正在搜「${esc(parts.slice(1).join(" "))}」…`);
+    await notifier.send(await findApp({ state, query: parts.slice(1).join(" "), fetchImpl, log }));
   } else if (cmd === "/del" && parts.length >= 2) {
     let code = parts[1].trim().replace(/^\//, "");
     code = firstJoinCode(code) || code;

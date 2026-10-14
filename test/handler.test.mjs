@@ -22,6 +22,11 @@ function load(name) {
   return readFileSync(join(FIXTURES_DIR, name), "utf8");
 }
 
+/** 从桩记录里取出 sendMessage 的 text（表单编码，'+' 要还原成空格） */
+function tgText(call) {
+  return new URLSearchParams(String(call.body || "")).get("text") || "";
+}
+
 const jsonRes = (o) =>
   new Response(JSON.stringify(o), { status: 200, headers: { "content-type": "application/json" } });
 const htmlRes = (s) => new Response(s, { status: 200, headers: { "content-type": "text/html" } });
@@ -263,7 +268,7 @@ for (const [label, worker] of WORKERS) {
       await settle();
       const sent = calls.filter((c) => c.url.includes("/sendMessage"));
       assert.equal(sent.length, 1, "应回一条 /status 消息");
-      assert.ok(decodeURIComponent(sent[0].body).includes("当前状态"));
+      assert.ok(tgText(sent[0]).includes("当前状态"));
     } finally {
       globalThis.fetch = realFetch;
     }
@@ -329,6 +334,74 @@ for (const [label, worker] of WORKERS) {
       const p = new URLSearchParams(setCall.body);
       assert.equal(p.get("url"), "https://x.workers.dev/telegram");
       assert.equal(p.get("secret_token"), "wh-secret");
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+test(`[${label}] Webhook：/add 能自动补齐元数据（走真实入口）`, async () => {
+    const { f, calls } = makeFetchStub();
+    // 给桩 fetch 补上 iTunes 与 departures 搜索
+    const orig = f;
+    globalThis.fetch = async (url, opts) => {
+      const u = String(url);
+      if (u.includes("itunes.apple.com/search")) {
+        return jsonRes({ resultCount: 1, results: [{ trackId: 1468454200, trackName: "番茄小说 - 热门短剧全本小说电子书阅读器", bundleId: "com.dragon.read", version: "7.3.9" }] });
+      }
+      if (u.includes("departures.to/search")) {
+        return htmlRes('<a href="https://departures.to/apps/16645?ref=search"><h3> 番茄小说 - 热门短剧全本小说电子书阅读器 <span>x</span></h3></a>');
+      }
+      return orig(url, opts);
+    };
+    try {
+      const env = makeEnv();
+      const { ctx, settle } = makeCtx();
+      await worker.fetch(
+        new Request("https://x.workers.dev/telegram", {
+          method: "POST",
+          headers: { "content-type": "application/json", "X-Telegram-Bot-Api-Secret-Token": "wh-secret" },
+          body: JSON.stringify({ message: { text: "/add dTUO1uyt 我的番茄", chat: { id: -1001234567890 } } }),
+        }),
+        env, ctx
+      );
+      await settle();
+      const saved = JSON.parse(env.STATE.map.get("state"));
+      const rec = saved.links["dTUO1uyt"];
+      assert.ok(rec, "应写进 state");
+      assert.equal(rec.appStoreId, 1468454200, "App Store id 应自动补齐");
+      assert.equal(rec.departuresId, 16645, "departures id 应自动补齐");
+      const sent = calls.filter((c) => c.url.includes("/sendMessage"));
+      assert.ok(sent.length >= 2, "应至少回「正在补齐」与结果两条");
+      assert.ok(tgText(sent[sent.length - 1]).includes("已加入监控"));
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  test(`[${label}] Webhook：/apps 能列出监控中的 App`, async () => {
+    const { f, calls } = makeFetchStub();
+    globalThis.fetch = f;
+    try {
+      const env = makeEnv();
+      // 先塞一条记录
+      env.STATE.map.set("state", JSON.stringify({
+        links: { dTUO1uyt: { label: "番茄小说", state: "open", appStoreId: 1468454200, departuresId: 16645, keywords: ["番茄小说"] } },
+        discoveries: {}, appstore: {}, meta: {},
+      }));
+      const { ctx, settle } = makeCtx();
+      await worker.fetch(
+        new Request("https://x.workers.dev/telegram", {
+          method: "POST",
+          headers: { "content-type": "application/json", "X-Telegram-Bot-Api-Secret-Token": "wh-secret" },
+          body: JSON.stringify({ message: { text: "/apps", chat: { id: -1001234567890 } } }),
+        }),
+        env, ctx
+      );
+      await settle();
+      const sent = calls.filter((c) => c.url.includes("/sendMessage"));
+      const body = tgText(sent[sent.length - 1]);
+      assert.match(body, /监控中的 App/);
+      assert.match(body, /1468454200/);
     } finally {
       globalThis.fetch = realFetch;
     }

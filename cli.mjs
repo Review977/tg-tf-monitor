@@ -14,7 +14,7 @@
  */
 
 import { doRun, health, renderHealth, setWebhook, deleteWebhook, listChatIds } from "./src/runner.js";
-import { probeJoin, parseJoinPage, STATE_LABEL } from "./src/core.js";
+import { probeJoin, parseJoinPage, STATE_LABEL, enrichApp, findApp, normalizeState, renderApps } from "./src/core.js";
 
 const argv = process.argv.slice(2);
 const cmd = argv[0] || "help";
@@ -66,6 +66,26 @@ async function main() {
     return;
   }
 
+  if (cmd === "find") {
+    const q = argv.slice(1).filter((a) => !a.startsWith("--")).join(" ");
+    if (!q) { console.error("用法：node cli.mjs find <App名字>"); process.exit(2); }
+    console.log(await findApp({ state: normalizeState(null), query: q, log }));
+    return;
+  }
+
+  if (cmd === "add") {
+    const arg = argv[1];
+    if (!arg) { console.error("用法：node cli.mjs add <TestFlight链接或join码> [名称]"); process.exit(2); }
+    const code = (arg.match(/join\/([A-Za-z0-9]{6,14})/) || [null, arg])[1];
+    const e = await enrichApp({ code, name: argv[2] || "", log });
+    console.log(JSON.stringify({
+      code, 应用名: e.appName, 状态: STATE_LABEL[e.state] || e.state,
+      AppStore_id: e.appStoreId, bundle: e.bundleId, departures_id: e.departuresId,
+      发现关键词: e.keywords, 提醒: e.notes,
+    }, null, 2));
+    return;
+  }
+
   if (cmd === "chat-id") {
     const r = await listChatIds(process.env);
     console.log(JSON.stringify(r, null, 2));
@@ -93,6 +113,8 @@ async function main() {
   node cli.mjs check [--send]       跑一轮监控（默认只打印）
   node cli.mjs scan  [--send]       跑一轮发现扫描（默认只打印）
   node cli.mjs health               部署体检
+  node cli.mjs find <名字>          按名字查 App Store id / departures / tfstore 上的 TF 码
+  node cli.mjs add <链接> [名称]    试跑"加一个 App"，看能自动补齐哪些元数据
   node cli.mjs chat-id              拿 chat_id（设了 webhook 之后会返回空）
   node cli.mjs set-webhook <url>    设置 Telegram 推送地址
   node cli.mjs del-webhook          撤销推送地址
