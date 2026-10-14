@@ -154,7 +154,7 @@ chat_id: 5551234567        private / 我
 
 | 平台 | 怎么做 |
 |---|---|
-| Cloudflare | 在 `Settings` → `Variables and Secrets` 里**新增** `TG_CHAT_ID`（部署表单里没有这项），保存即可 |
+| Cloudflare | 在 `Settings` → `Variables and Secrets` 里**新增** `TG_CHAT_ID`（部署表单里没有这项）。⚠️ **类型选「密钥 / Secret」** —— 选普通「变量」的话，下次重新部署可能被清掉，bot 就会突然不回复 |
 | Vercel | 在环境变量里加上 `TG_CHAT_ID`，然后**必须重新部署**（环境变量是部署时注入的） |
 
 > 万一你已经在别处填了个占位的 `TG_CHAT_ID`（比如 `0`），程序会把它当成"未配置"

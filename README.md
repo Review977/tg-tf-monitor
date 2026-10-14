@@ -174,9 +174,16 @@ Worker → `Settings` → `Variables and Secrets`，加这几个（建议都选�
 |---|---|---|
 | `TG_TOKEN` | ✅ 部署时必须 | @BotFather 发的 token |
 | `ADMIN_KEY` | ✅ 部署时必须 | 随机长串。保护 `/run` `/set-webhook` `/chat-id` `/set-commands`，并兼作 Webhook 来源校验 |
-| `TG_CHAT_ID` | ⬜ **部署后再加** | 目标会话 id（拿法见下）。部署时还不知道，所以不在部署表单里 |
+| `TG_CHAT_ID` | ⬜ **部署后再加** | 目标会话 id（拿法见下）。部署时还不知道，所以不在部署表单里。⚠️ **类型必须选「密钥 / Secret」**，理由见下 |
 | `TG_WEBHOOK_SECRET` | ⬜ 可选 | 想给 Webhook 单独一把密钥再设；不设则用 `ADMIN_KEY` |
 | `TIMEZONE` | ⬜ 可选 | 消息里时间的时区，默认 `Asia/Shanghai`。见下 |
+
+> ⚠️ **`TG_CHAT_ID` 一定要选「密钥（Secret）」类型，不要选「变量」。**
+> 普通「变量」在重新部署时可能被 `wrangler deploy` 覆盖掉（因为绑定以仓库里的
+> `wrangler.jsonc` 为准，而它没有 `vars`），结果就是**重新部署后 bot 突然不回复了**。
+> 「密钥」是单独存的，不受部署影响。
+> 真遇到了也不至于抓瞎：没配 `TG_CHAT_ID` 时 bot 会**直接回你一条诊断**，
+> 并把它看到的 chat_id 告诉你（见下「重新部署后 bot 不回复」）。
 
 > ⏰ **时间显示**：serverless 没有"本地时间" —— Worker 跑在 Cloudflare 边缘节点上，
 > `Date` 默认就是 **UTC**，不配就会显示成差 8 小时的时间。
@@ -656,6 +663,19 @@ git ls-remote https://github.com/Review977/tg-tf-monitor
 Cloudflare 的 GitHub 授权过期了，与本项目无关。要么去
 <https://github.com/settings/installations> 找到 **Cloudflare Workers and Pages** 重新授权，
 要么直接走 [A-3 手工粘贴](#a-3-手工粘贴不依赖-github也不依赖任何-git-集成)（不碰 GitHub）。
+
+**重新部署后 bot 突然不回复了**（之前能用）
+九成是 **`TG_CHAT_ID` 被这次部署清掉了** —— 它多半是以「变量」而不是「密钥」加的，
+而绑定以仓库里的 `wrangler.jsonc` 为准（里面没有 `vars`），于是普通变量被覆盖。
+
+先看体检页（**不需要 key**）：`https://<你的worker>.workers.dev/health` ——
+它会明确列出"缺 telegram.chatId"。
+
+修法：控制台 → 你的 Worker → `Settings` → `Variables and Secrets` → 加
+`TG_CHAT_ID`，**类型选「密钥 / Secret」**。
+
+> 💡 没配 `TG_CHAT_ID` 时，bot 会**主动回你一条诊断**并附上它看到的 chat_id，
+> 不会像以前那样静默什么都不发。
 
 **TG 里发命令没反应** → 九成是没设 webhook，或设错了地址。
 打开 `/` 或 `/health` 看 `webhook.url`；用 `/set-webhook?key=…` 重设。

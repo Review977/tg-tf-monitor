@@ -11,7 +11,7 @@
 
 import {
   makeNotifier, runMonitor, runDiscovery, handleCommand, tgCall, tgPrepare,
-  setDisplayTimeZone,
+  setDisplayTimeZone, esc, tgSendParams,
 } from "./core.js";
 import { loadConfig, checkConfig } from "./config.js";
 import { pickStorage } from "./storage.js";
@@ -87,6 +87,33 @@ export async function handleUpdate(env = {}, update, opts = {}) {
     if (!msg) return { ok: true, skipped: "无 message 字段" };
     const text = msg.text || "";
     if (!text.startsWith("/")) return { ok: true, skipped: "非命令" };
+
+    // ⚠️ 没配 TG_CHAT_ID 时的自解释：以前这里会静默进 dry 模式、只写日志不发送，
+    // 从用户视角看就是"bot 不回我"，而且**完全无从下手**。现在改成：
+    // 不执行命令，但**回到发消息的那个会话**说清怎么修，并把它的 chat_id 一并告诉他。
+    const allowedChat = String((cfg.telegram && cfg.telegram.chatId) || "").trim();
+    const incomingChat = msg.chat && msg.chat.id != null ? String(msg.chat.id) : "";
+    if (!allowedChat && incomingChat) {
+      log("⚠️ 未配置 TG_CHAT_ID，已回复诊断信息（命令未执行）");
+      const tip = [
+        "⚠️ <b>我不知道该把消息发到哪个会话</b> —— 环境变量 <code>TG_CHAT_ID</code> 没配，或者配成了空值/占位值。",
+        "",
+        "你这条消息来自：<code>" + esc(incomingChat) + "</code>",
+        "",
+        "<b>怎么修</b>：Cloudflare 控制台 → 你这个 Worker → <code>Settings</code> → " +
+          "<code>Variables and Secrets</code> → 加一个",
+        "<code>TG_CHAT_ID</code> = <code>" + esc(incomingChat) + "</code>",
+        "类型请选 <b>密钥（Secret）</b> —— 选普通「变量」的话，下次重新部署可能被清掉，就会再出现现在这个现象。",
+        "",
+        "（这条只是诊断信息，你的命令没有被执行。）",
+      ].join("\n");
+      try {
+        await tgCall(cfg, "sendMessage", tgSendParams(incomingChat, tip), { fetchImpl });
+      } catch (e) {
+        log("  诊断信息也发不出去: " + (e && e.message));
+      }
+      return { ok: true, skipped: "未配置 TG_CHAT_ID（已回诊断信息）" };
+    }
 
     const store = pickStorage(env);
     const state = await store.load();

@@ -407,6 +407,56 @@ test(`[${label}] Webhook：/add 能自动补齐元数据（走真实入口）`, 
     }
   });
 
+test(`[${label}] 没配 TG_CHAT_ID 时：不静默，回一条自解释诊断（含该会话 id）`, async () => {
+    const { f, calls } = makeFetchStub();
+    globalThis.fetch = f;
+    try {
+      const env = makeEnv();
+      delete env.TG_CHAT_ID;                       // 模拟变量被清掉
+      const { ctx, settle } = makeCtx();
+      await worker.fetch(
+        new Request("https://x.workers.dev/telegram", {
+          method: "POST",
+          headers: { "content-type": "application/json", "X-Telegram-Bot-Api-Secret-Token": "wh-secret" },
+          body: JSON.stringify({ message: { text: "/status", chat: { id: -1001234567890 } } }),
+        }),
+        env, ctx
+      );
+      await settle();
+      const sent = calls.filter((c) => c.url.includes("/sendMessage"));
+      assert.equal(sent.length, 1, "应该回一条诊断，而不是什么都不发（静默失败）");
+      const body = tgText(sent[0]);
+      assert.match(body, /TG_CHAT_ID/, "要说清是哪个变量没配");
+      assert.match(body, /-1001234567890/, "要把它自己的 chat_id 告诉用户，省得他去查");
+      assert.match(body, /密钥|Secret/, "要提醒选 Secret 类型，否则下次部署又会被清掉");
+      assert.match(body, /没有被执行/, "要说明命令没执行");
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  test(`[${label}] 配了 TG_CHAT_ID 但来自别的会话：仍然忽略（授权不被绕过）`, async () => {
+    const { f, calls } = makeFetchStub();
+    globalThis.fetch = f;
+    try {
+      const env = makeEnv();   // TG_CHAT_ID = -1001234567890
+      const { ctx, settle } = makeCtx();
+      await worker.fetch(
+        new Request("https://x.workers.dev/telegram", {
+          method: "POST",
+          headers: { "content-type": "application/json", "X-Telegram-Bot-Api-Secret-Token": "wh-secret" },
+          body: JSON.stringify({ message: { text: "/status", chat: { id: 999 } } }),
+        }),
+        env, ctx
+      );
+      await settle();
+      assert.equal(calls.filter((c) => c.url.includes("/sendMessage")).length, 0,
+        "配了 chat_id 时，别的会话不该收到任何回复");
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
   test(`[${label}] /chat-id 列出会话（未设 webhook 时）`, async () => {
     const calls = [];
     const f = async (url, opts = {}) => {
