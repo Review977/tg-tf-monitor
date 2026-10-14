@@ -396,12 +396,47 @@ test("nowStr：时区名不可用时自动退回固定偏移（而不是显示�
   setDisplayTimeZone("Asia/Shanghai", 480);   // 还原，免得影响其它用例
 });
 
+test("tzLabel：带秒/毫秒的时刻也算得准（曾把 +8:00 算成 +7:59）", async () => {
+  const { tzLabel, setDisplayTimeZone } = await import("../src/core.js");
+  setDisplayTimeZone("Asia/Shanghai", 480);
+  for (const iso of ["2026-10-14T08:24:00Z", "2026-10-14T08:24:37Z", "2026-10-14T08:24:59.999Z"]) {
+    assert.equal(tzLabel(new Date(iso)), "Asia/Shanghai（UTC+8）", iso + " 算出了 " + tzLabel(new Date(iso)));
+  }
+  // 用"现在"（一定带秒）也不能飘
+  assert.match(tzLabel(), /UTC\+8）$/, "用当前时刻算标签也不能飘：" + tzLabel());
+});
+
+test("tzLabel：时区名生效时，标签必须报**真实**偏移（不能拿配置里的 offset 糊弄）", async () => {
+  const { tzLabel, nowStr, setDisplayTimeZone } = await import("../src/core.js");
+  const d = new Date("2026-10-14T08:24:00Z");   // 纽约此时是夏令时 UTC-4
+
+  setDisplayTimeZone("America/New_York", 480);  // 故意给一个不匹配的 offset
+  assert.equal(nowStr(d), "2026-10-14 04:24", "时间要按纽约算");
+  assert.match(tzLabel(d), /America\/New_York（UTC-4）/, "标签要报真实的 -4，不能报配置里的 +8");
+  assert.ok(!/UTC\+8/.test(tzLabel(d)), "标签与实际时间自相矛盾是最糟的");
+
+  setDisplayTimeZone("Asia/Kolkata", 0);
+  assert.match(tzLabel(d), /UTC\+5:30/, "半小时偏移也要对");
+
+  setDisplayTimeZone("Asia/Shanghai", 480);     // 还原
+});
+
+test("tzLabel：时区名不可用时，只报偏移，**不能把坏名字显示出来**", async () => {
+  const { tzLabel, nowStr, setDisplayTimeZone } = await import("../src/core.js");
+  const d = new Date("2026-10-14T08:24:00Z");
+  setDisplayTimeZone("Bogus/Zone", 330);
+  assert.equal(nowStr(d), "2026-10-14 13:54");
+  assert.equal(tzLabel(d), "UTC+5:30", "坏时区名不该出现在给用户看的标签里");
+  setDisplayTimeZone("Asia/Shanghai", 480);
+});
+
 test("tzLabel：能正确表达正负与半小时偏移", async () => {
   const { tzLabel, setDisplayTimeZone } = await import("../src/core.js");
   setDisplayTimeZone("", 480);   assert.equal(tzLabel(), "UTC+8");
   setDisplayTimeZone("", -300);  assert.equal(tzLabel(), "UTC-5");
   setDisplayTimeZone("", 330);   assert.equal(tzLabel(), "UTC+5:30");
   setDisplayTimeZone("", 0);     assert.equal(tzLabel(), "UTC+0");
+  setDisplayTimeZone("UTC", 0);  assert.equal(tzLabel(), "UTC+0", "UTC 当成没有名字，走偏移分支");
   setDisplayTimeZone("Asia/Shanghai", 480);
 });
 

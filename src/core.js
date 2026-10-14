@@ -844,20 +844,62 @@ export function daysAgo(isoDate, now = new Date()) {
  * 而且不同运行时的默认 locale 会让输出格式漂移。所以下面会**校验输出格式**，
  * 不符合预期就自动退回固定偏移 —— 宁可少一点夏令时支持，也不能把时间显示错。
  */
-let DISPLAY_TZ = { name: "", offsetMinutes: 0 };
+let DISPLAY_TZ = { name: "", offsetMinutes: 0, usable: false };
+
+const TZ_FMT_OPTS = {
+  year: "numeric", month: "2-digit", day: "2-digit",
+  hour: "2-digit", minute: "2-digit", hour12: false,
+};
+
+/** 探测某个 IANA 时区名在当前运行时能不能用（Worker 的 Intl 时区数据不保证完整） */
+function tzNameUsable(name) {
+  if (!name) return false;
+  try {
+    const out = new Intl.DateTimeFormat("sv-SE", { timeZone: name, ...TZ_FMT_OPTS }).format(new Date(0));
+    return TS_SHAPE.test(out);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 算出某个 IANA 时区在给定时刻的**真实**偏移（分钟）。
+ * 为什么需要：配置里可能同时给了 timezone 和 utcOffsetMinutes，而两者未必一致
+ * （比如 America/New_York 在夏令时是 UTC-4）。标签必须反映**实际生效**的那个，
+ * 否则会出现"显示纽约时间、标签却写 UTC+8"这种自相矛盾。
+ */
+function offsetMinutesForName(name, d) {
+  try {
+    const parts = new Intl.DateTimeFormat("en-US", { timeZone: name, ...TZ_FMT_OPTS }).formatToParts(d);
+    const g = {};
+    for (const p of parts) if (p.type !== "literal") g[p.type] = p.value;
+    const asUTC = Date.UTC(Number(g.year), Number(g.month) - 1, Number(g.day),
+      Number(g.hour) % 24, Number(g.minute));
+    // ⚠️ 必须先把 d 截到整分钟再相减 —— 格式化结果只精确到分钟，
+    // 拿它去减带秒/毫秒的时间戳会差不到一分钟，Math.round 会把 +8:00 算成 +7:59
+    // （实测：秒数 > 30 时必现）。这个 bug 是测试抓出来的。
+    const t = Math.floor(d.getTime() / 60000) * 60000;
+    return Math.round((asUTC - t) / 60000);
+  } catch {
+    return null;
+  }
+}
 
 export function setDisplayTimeZone(name, offsetMinutes) {
   const n = String(name == null ? "" : name).trim();
   const off = Number(offsetMinutes);
+  const tzName = n && n.toUpperCase() !== "UTC" ? n : "";
   DISPLAY_TZ = {
-    name: n && n.toUpperCase() !== "UTC" ? n : "",
+    name: tzName,
     offsetMinutes: Number.isFinite(off) ? off : 0,
+    usable: tzNameUsable(tzName),
   };
-  return { ...DISPLAY_TZ };
+  return { name: DISPLAY_TZ.name, offsetMinutes: DISPLAY_TZ.offsetMinutes,
+           mode: DISPLAY_TZ.usable ? "name" : "offset" };
 }
 
 export function getDisplayTimeZone() {
-  return { ...DISPLAY_TZ };
+  return { ...DISPLAY_TZ, mode: DISPLAY_TZ.usable ? "name" : "offset" };
 }
 
 /** 形如 "2026-10-14 16:24"；不满足这个形状的输出一律不采用 */
@@ -871,30 +913,36 @@ function formatWithOffset(d, offsetMinutes) {
 }
 
 export function nowStr(d = new Date()) {
-  if (DISPLAY_TZ.name) {
+  if (DISPLAY_TZ.usable) {
     try {
       // sv-SE 的日期格式恰好是 "YYYY-MM-DD HH:mm"，拿来当 ISO 风格输出最省事
-      const out = new Intl.DateTimeFormat("sv-SE", {
-        timeZone: DISPLAY_TZ.name,
-        year: "numeric", month: "2-digit", day: "2-digit",
-        hour: "2-digit", minute: "2-digit", hour12: false,
-      }).format(d);
+      const out = new Intl.DateTimeFormat("sv-SE", { timeZone: DISPLAY_TZ.name, ...TZ_FMT_OPTS }).format(d);
       if (TS_SHAPE.test(out)) return out;
     } catch {
-      /* 时区名不被支持 / Intl 数据缺失 -> 退回固定偏移 */
+      /* 运行期才失效（理论上不会，setDisplayTimeZone 已探测过）-> 退回固定偏移 */
     }
   }
   return formatWithOffset(d, DISPLAY_TZ.offsetMinutes);
 }
 
-/** 时区的人类可读标签，给 /status 抬头用 */
-export function tzLabel() {
-  const { name, offsetMinutes } = DISPLAY_TZ;
-  const sign = offsetMinutes >= 0 ? "+" : "-";
-  const abs = Math.abs(offsetMinutes);
+function offsetLabel(minutes) {
+  const sign = minutes >= 0 ? "+" : "-";
+  const abs = Math.abs(minutes);
   const hh = Math.floor(abs / 60), mm = abs % 60;
-  const off = `UTC${sign}${hh}${mm ? ":" + String(mm).padStart(2, "0") : ""}`;
-  return name ? `${name}（${off}）` : off;
+  return `UTC${sign}${hh}${mm ? ":" + String(mm).padStart(2, "0") : ""}`;
+}
+
+/**
+ * 时区标签，给 /status 抬头用。
+ * **只报告实际生效的那个**：名字可用就报名字（附它此刻的真实偏移），否则报固定偏移。
+ */
+export function tzLabel(d = new Date()) {
+  const { name, offsetMinutes, usable } = DISPLAY_TZ;
+  if (usable) {
+    const real = offsetMinutesForName(name, d);
+    return real === null ? name : `${name}（${offsetLabel(real)}）`;
+  }
+  return offsetLabel(offsetMinutes);
 }
 
 // ─────────────────────────── Telegram 调用 ───────────────────────────
