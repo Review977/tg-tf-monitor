@@ -71,12 +71,13 @@
 
 Cloudflare 有两条路，**任选一条**：
 
-| | 一键按钮（A-1） | 手工粘贴（A-2） |
-|---|---|---|
-| 要 GitHub 吗 | ✅ 要授权 Cloudflare GitHub App | ❌ **完全不用** |
-| 要装东西吗 | ❌ | ❌ |
-| 建 KV / 填密钥 | 自动弹出来问你 | 自己点几下 |
-| 什么时候选它 | 正常情况 | **按钮报 GitHub 授权错误时**（见下面排查） |
+| | A-1 一键按钮 | A-2 导入仓库 | A-3 手工粘贴 |
+|---|---|---|---|
+| 怎么工作 | CF 把仓库**克隆一份**到你账号 | 直接连你**已有的**仓库 | 你把代码粘进编辑器 |
+| 要 GitHub 吗 | ✅ 要 App 授权 | ✅ 用你账号**已有的** Git 集成 | ❌ **完全不用** |
+| 自动部署 | ✅ 推送即部署 | ✅ 推送即部署 | ❌ 改了要重新粘 |
+| 建 KV / 填密钥 | 自动弹出来问你 | 要先把真实 KV id 写进 `wrangler.jsonc` | 自己点几下 |
+| 什么时候选它 | 一切顺利时 | **A-1 报「无法获取存储库内容」时**（它不用克隆，所以不卡那一步） | A-1/A-2 都不顺时 |
 
 ---
 
@@ -117,11 +118,33 @@ Cloudflare 有两条路，**任选一条**：
 
 ---
 
-### A-2 手工粘贴（不依赖 GitHub）
+### A-2 导入仓库（用你账号已有的 Git 集成，推荐）
+
+> **为什么这条能绕过 A-1 的报错**：A-1 的流程是「把源仓库**克隆一份**到你账号」，
+> `无法获取存储库内容。` 就出在这一步。而这条是**直接连你已有的仓库**，不需要克隆。
+> 如果你账号里已经有别的 Worker 连着 Git（比如某个反代 Worker），说明这条集成是通的。
+
+1. 先去 **Storage & Databases → KV → Create namespace**，建好后**复制它的 ID**
+2. 把这个 ID 填进仓库根目录的 `wrangler.jsonc`，替换掉 `kv_namespaces` 里那串
+   `00000000000000000000000000000000`
+   —— 可以在 GitHub 网页上直接改（打开文件 → 铅笔图标 → 粘贴 → Commit）
+3. 控制台 → `Workers & Pages` → `Create application`
+4. 找到 **`Import a repository`**（导入仓库）→ 点旁边的 `Get started`
+5. 在 **`Git account`** 里选你的 GitHub 账号 → 从列表里选 `tg-tf-monitor`
+6. 配置项目 → `Save and Deploy`
+7. 之后每次 push 都会自动重新部署
+
+> ⚠️ 这条路的 KV 绑定来自 `wrangler.jsonc`，所以**必须**先把真实 id 写进去；
+> 留占位符会在构建时报找不到命名空间。
+
+---
+
+### A-3 手工粘贴（不依赖 GitHub，也不依赖任何 Git 集成）
 
 **1. 建 KV 命名空间**
 控制台 → `Storage & Databases`（存储与数据库）→ `KV` → `Create namespace`，
 名字随便（如 `tfmon-state`）。
+> 建好后**复制它的 ID** —— A-2 那条路要用（A-1 按钮那条会自动建，不用管）。
 
 **2. 建 Worker**
 `Workers & Pages` → `Create` → `Worker` → 起个名字（如 `tg-tf-monitor`）→ `Deploy`。
@@ -469,22 +492,29 @@ test/              116 项测试
 ## 排查
 
 **部署页报红字 `无法获取存储库内容。` / `Your GitHub authorization has expired`**
-都是 Cloudflare 侧的 Git 集成问题。按**官方文档的处置顺序**试：
 
-1. **先确认仓库访问权限**：<https://github.com/settings/installations> →
-   **Cloudflare Workers and Pages** → `Configure` → **Repository access**
-   确认包含 `tg-tf-monitor`（或选 `All repositories`）。
-2. **还不行就卸载重装**（这是 CF 官方文档对
-   [Git integration issues](https://developers.cloudflare.com/workers/ci-cd/builds/troubleshoot/)
-   给的标准处置）：
-   1. 同一个 `Configure` 页面 → `Uninstall "Cloudflare Workers and Pages"` → `Uninstall`
-   2. 回 <https://dash.cloudflare.com> → `Create application` → `Pages` → `Connect to Git`
-   3. 点 `+ Add account` → 选你的 GitHub 账号 → `Install & Authorize`
-   4. 回到部署页重试
-3. **顺带检查**：CF 文档明确写过 *A GitHub account should only point to one Cloudflare account* ——
-   如果你有多个 Cloudflare 账号都装过这个 App，先把不用的那个解除。
-4. **不想折腾就走 [A-2 手工粘贴](#a-2-手工粘贴不依赖-github)** ——
-   它完全不需要 Cloudflare 读你的仓库，是目前唯一**确定能成**的路。
+> 🛑 **先看这条，别急着卸载 App。**
+> 官方文档写明：*removing access to GitHub will **disable new builds** for Workers and Pages
+> projects that were connected to those repositories, though your previous deployments
+> will continue to be hosted*。
+> 也就是说 —— **如果你账号里已经有别的 Worker / Pages 项目连着 Git
+> （比如某个反代、图床之类的 Worker），卸载会让它以后推代码不再自动部署。**
+> 先把这条排除掉，再考虑卸载。
+
+按**成功率**试：
+
+1. **走 [A-2 导入仓库](#a-2-导入仓库用你账号已有的-git-集成推荐)** ——
+   它不用克隆仓库，所以不卡在报错那一步；而且用的就是你账号里已经能用的 Git 集成。
+2. **走 [A-3 手工粘贴](#a-3-手工粘贴不依赖-github也不依赖任何-git-集成)** ——
+   完全不碰 Git，**确定能成**。
+3. **确认仓库访问权限**：<https://github.com/settings/installations> →
+   **Cloudflare Workers and Pages** → `Configure` → **Repository access** 含 `tg-tf-monitor`。
+4. **检查是不是有多个 Cloudflare 账号**：CF 文档明确写过
+   *A GitHub account should only point to one Cloudflare account*。
+5. **最后才考虑卸载重装**（官方对 Git integration issues 的标准处置），
+   但**务必先确认没有别的项目在用这个 App**：
+   同一个 `Configure` 页 → `Uninstall "Cloudflare Workers and Pages"` → 回 dash →
+   `Create application` → `Pages` → `Connect to Git` → `+ Add account` → `Install & Authorize`。
 
 **怎么确认不是仓库的问题**（一条命令）：
 ```bash
@@ -494,7 +524,7 @@ git ls-remote https://github.com/Review977/tg-tf-monitor
 
 Cloudflare 的 GitHub 授权过期了，与本项目无关。要么去
 <https://github.com/settings/installations> 找到 **Cloudflare Workers and Pages** 重新授权，
-要么直接走 [A-2 手工粘贴](#a-2-手工粘贴不依赖-github)（不碰 GitHub）。
+要么直接走 [A-3 手工粘贴](#a-3-手工粘贴不依赖-github也不依赖任何-git-集成)（不碰 GitHub）。
 
 **TG 里发命令没反应** → 九成是没设 webhook，或设错了地址。
 打开 `/` 或 `/health` 看 `webhook.url`；用 `/set-webhook?key=…` 重设。

@@ -63,11 +63,13 @@
 1. 打开本仓库 README，点 **Deploy to Cloudflare** 按钮。
 2. 授权 GitHub —— 它会自动 fork 一份到你账号并建一个 Worker 项目。
 
-   > ⚠️ 这一步可能报两种红字，**都是 Cloudflare 侧的 GitHub 连接问题**（仓库侧已核实没问题）：
-   > `Your GitHub authorization has expired` 或 `无法获取存储库内容。`。
-   > 先去 <https://github.com/settings/installations> 找到 **Cloudflare Workers and Pages**，
-   > 在 `Configure` 里确认 **Repository access 包含 `tg-tf-monitor`**（新仓库很容易没被勾上）。
-   > 还不行就走 README 的 **A-2 手工粘贴** —— 那条路不需要 Cloudflare 读你的仓库。
+   > ⚠️ 这一步可能报 `Your GitHub authorization has expired` 或 `无法获取存储库内容。`。
+   > **先别卸载那个 GitHub App** —— 如果你账号里已经有别的 Worker 连着 Git
+   > （比如某个反代 Worker），卸载会让它以后不再自动部署。
+   >
+   > 改走 README 里的 **A-2 导入仓库**：它直接连你已有的仓库，不需要克隆，
+   > 所以不卡在报错那一步；而且用的就是你账号里已经能用的 Git 集成。
+   > 再不行走 **A-3 手工粘贴**（完全不碰 Git，确定能成）。
 3. 它会读 `wrangler.jsonc`，**自动创建 KV 命名空间并绑定**（变量名 `STATE`），不用你手填 id。
 4. 它会读 `.dev.vars.example`，**弹出来问你密钥 —— 只有两项**：
 
