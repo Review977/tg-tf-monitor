@@ -466,12 +466,24 @@ function collectItemLists(node, acc) {
   }
 }
 
+/**
+ * 发现源被"拦住"时要说话，不能静默返回空数组。
+ *
+ * ⚠️ 为什么：`probeXxx()` 返回 [] 在日志里和"今天确实没有新链接"长得一模一样。
+ * 实测：360 搜索对本机**所有**查询都返回 HTTP 200 的验证码页（标题「访问异常页面」），
+ * probeSo360 于是静默返回 []，/scan 只说"0 条含 join 码" —— 老板会以为没人发新链接，
+ * 而真相是这个来源整个废掉了。宁可多一行日志，也不要这种"看着正常"的失效。
+ */
+function noResultsLog(log, source, why) {
+  if (log) log(`  ⚠️ ${source} 没有拿到结果：${why}（不是"没有新链接"）`);
+}
+
 /** tfstore.top 的 app id **就是** join 码；搜索结果里有 JSON-LD ItemList */
 export async function probeTfstore(query, opts = {}) {
   const url = "https://tfstore.top/zh-CN/apps/search?search=" + encodeURIComponent(query);
   const [st, text] = await httpGet(url, opts);
   const out = [];
-  if (st !== 200) return out;
+  if (st !== 200) { noResultsLog(opts.log, "tfstore", "HTTP " + st); return out; }
   const items = [];
   const re = /<script type="application\/ld\+json">([\s\S]*?)<\/script>/g;
   let m;
@@ -512,7 +524,7 @@ export async function probeBing(query, opts = {}) {
   const url = "https://cn.bing.com/search?count=30&q=" + encodeURIComponent(query);
   const [st, text] = await httpGet(url, opts);
   const out = [];
-  if (st !== 200) return out;
+  if (st !== 200) { noResultsLog(opts.log, "Bing", "HTTP " + st); return out; }
   const re = /<li class="b_algo"[\s\S]*?<\/li>/g;
   let m;
   while ((m = re.exec(text)) !== null) {
@@ -532,14 +544,23 @@ export async function probeBing(query, opts = {}) {
 }
 
 /**
- * 360 搜索（so.com）—— 实测唯一能在无浏览器下稳定拿到结果的引擎。
+ * 360 搜索（so.com）。
  * 结果结构化：<li class="res-list"> 里 data-mdurl = 真实外链，res-title = 页面标题。
+ *
+ * ⚠️ 别再照抄"实测唯一能在无浏览器下稳定拿到结果的引擎"这种结论 —— 2026-10-15 实测：
+ * 本机对**所有**查询都拿到 HTTP 200 的反爬验证码页（标题「访问异常页面」，
+ * 正文「请输入验证码以便正常访问」+ `anti_captcha` 脚本），一条结果都没有。
+ * 所以这里必须把"被拦"识别出来并说出来，否则它和"今天没有新链接"完全无法区分。
  */
 export async function probeSo360(query, opts = {}) {
   const url = "https://www.so.com/s?q=" + encodeURIComponent(query);
   const [st, text] = await httpGet(url, opts);
   const out = [];
-  if (st !== 200) return out;
+  if (st !== 200) { noResultsLog(opts.log, "360搜索", "HTTP " + st); return out; }
+  if (/访问异常页面|请输入验证码以便正常访问|anti_captcha|qcaptcha\.so\.com/.test(text)) {
+    noResultsLog(opts.log, "360搜索", "被反爬拦了（返回的是验证码页，不是搜索结果）");
+    return out;
+  }
   const re = /<li class="res-list"[\s\S]*?<\/li>/g;
   let m;
   while ((m = re.exec(text)) !== null) {
@@ -567,7 +588,7 @@ export async function probeTgChannel(channel, opts = {}) {
   const url = "https://t.me/s/" + ch;
   const [st, text] = await httpGet(url, opts);
   const out = [];
-  if (st !== 200) return out;
+  if (st !== 200) { noResultsLog(opts.log, "TG @" + ch, "HTTP " + st); return out; }
   for (const chunk of text.split("tgme_widget_message_wrap").slice(1)) {
     const codes = findJoinCodes(chunk);
     if (!codes.length) continue;
@@ -1924,7 +1945,7 @@ export async function runDiscovery({ cfg, state, notifier, log = () => {}, fetch
       name: `tfstore:${q}`,
       run: async () => {
         let n = 0;
-        const hits = await probeTfstore(q, { fetchImpl });
+        const hits = await probeTfstore(q, { fetchImpl, log });
         log(`  tfstore「${q}」→ ${hits.length} 条`);
         for (const h of hits) {
           if (isRelevant(h.appName)) n += await registerDiscovery({ cfg, state, notifier, log, fetchImpl }, h);
@@ -1939,7 +1960,7 @@ export async function runDiscovery({ cfg, state, notifier, log = () => {}, fetch
         name: `bing:${q}`,
         run: async () => {
           let n = 0;
-          const hits = await probeBing(q, { fetchImpl });
+          const hits = await probeBing(q, { fetchImpl, log });
           log(`  Bing「${q}」→ ${hits.length} 条含 join 码`);
           for (const h of hits) {
             if (isRelevant((h.context || "") + " " + (h.appName || ""))) {
@@ -1955,7 +1976,7 @@ export async function runDiscovery({ cfg, state, notifier, log = () => {}, fetch
         name: `so360:${q}`,
         run: async () => {
           let n = 0;
-          const hits = await probeSo360(q, { fetchImpl });
+          const hits = await probeSo360(q, { fetchImpl, log });
           log(`  360搜索「${q}」→ ${hits.length} 条含 join 码`);
           for (const h of hits) {
             if (isRelevant((h.context || "") + " " + (h.appName || ""))) {
@@ -1972,7 +1993,7 @@ export async function runDiscovery({ cfg, state, notifier, log = () => {}, fetch
       name: `tg:${ch}`,
       run: async () => {
         let n = 0;
-        const hits = await probeTgChannel(ch, { fetchImpl });
+        const hits = await probeTgChannel(ch, { fetchImpl, log });
         log(`  TG @${ch} → ${hits.length} 条含 join 码`);
         for (const h of hits) {
           if (isRelevant(h.context || "")) {

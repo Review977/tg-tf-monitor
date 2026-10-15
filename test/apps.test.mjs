@@ -1566,3 +1566,23 @@ test("⭐ 回归：discoveries 裁剪不能先淘汰已知 open 的码（否则�
   const again = await fire("KEEPCODE");
   assert.equal(again.n, 0, "它已经通知过了，不能再报一次：" + again.sent.join("\n"));
 });
+
+test("⭐ 回归：发现源被反爬拦住时要出声（360 返回验证码页不能静默当成「0 条」）", async () => {
+  // 2026-10-15 线上实测：so.com 对本机**所有**查询都返回 HTTP 200 的验证码页
+  // （标题「访问异常页面」），probeSo360 于是静默返回 []，日志里和"今天没有新链接"一样。
+  const { probeSo360, probeTfstore, probeBing, probeTgChannel } = await import("../src/core.js");
+  const captcha = "<html><head><title>访问异常页面</title></head><body>" +
+    "<h4 class='title'>请输入验证码以便正常访问</h4>" +
+    "<script src='https://s.ssl.qhres2.com/pkg/anti_captcha/vip/latest/q360.js'></script></body></html>";
+  const logs = [];
+  const out = await probeSo360("番茄小说", { fetchImpl: async () => htmlRes(captcha), log: (m) => logs.push(m) });
+  assert.deepEqual(out, [], "拦住了就是没有结果");
+  assert.ok(logs.some((m) => /反爬|验证码/.test(m)), "被拦住必须说出来：\n" + logs.join("\n"));
+
+  for (const [name, fn] of [["tfstore", probeTfstore], ["Bing", probeBing], ["TG 频道", probeTgChannel]]) {
+    const l = [];
+    const r = await fn("x", { fetchImpl: async () => new Response("boom", { status: 503 }), log: (m) => l.push(m) });
+    assert.deepEqual(r, []);
+    assert.ok(l.some((m) => /503/.test(m)), `${name} 非 200 也要说出来：` + l.join("|"));
+  }
+});
