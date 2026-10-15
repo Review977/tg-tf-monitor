@@ -173,7 +173,7 @@ Worker → `Settings` → `Variables and Secrets`，加这几个（建议都选�
 | 变量 | 必填 | 说明 |
 |---|---|---|
 | `TG_TOKEN` | ✅ 部署时必须 | @BotFather 发的 token |
-| `ADMIN_KEY` | ✅ 部署时必须 | 随机长串。保护 `/run` `/set-webhook` `/chat-id` `/set-commands`，并兼作 Webhook 来源校验 |
+| `ADMIN_KEY` | ✅ 部署时必须 | 随机长串。保护 `/run` `/set-webhook` `/chat-id` `/set-commands`，并兼作 Webhook 来源校验。⚠️ **只用 `A-Z a-z 0-9 _ -`**（Telegram 对 `secret_token` 的字符集有硬要求），建议 `openssl rand -hex 24`：含 `! # + / =` 会被 Telegram 400 拒掉，webhook 设不上、bot 收不到任何命令 |
 | `TG_CHAT_ID` | ⬜ **部署后再加** | 目标会话 id（拿法见下）。部署时还不知道，所以不在部署表单里。⚠️ **类型必须选「密钥 / Secret」**，理由见下 |
 | `TG_WEBHOOK_SECRET` | ⬜ 可选 | 想给 Webhook 单独一把密钥再设；不设则用 `ADMIN_KEY` |
 | `TIMEZONE` | ⬜ 可选 | 消息里时间的时区，默认 `Asia/Shanghai`。见下 |
@@ -194,7 +194,7 @@ Worker → `Settings` → `Variables and Secrets`，加这几个（建议都选�
 > 存储里一律是 **UTC 时间点**（ISO），显示时才转成配置的时区 ——
 > 所以改时区、或读到旧版本写下的数据，显示都不会错乱。
 
-随机串生成：随便敲一长串，或本地跑 `openssl rand -hex 24`。
+随机串生成：本地跑 `openssl rand -hex 24`（**别用 `-base64`** —— 它带 `+ / =`，而 Telegram 的 `secret_token` 只收 `A-Z a-z 0-9 _ -`）。
 
 > 这里**只加 `TG_TOKEN` 和 `ADMIN_KEY`**。`TG_CHAT_ID` 现在还不知道，
 > 等第 6 步拿到再加。

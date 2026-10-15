@@ -28,7 +28,9 @@ function authorized(req) {
   const key = adminKey(process.env);
   const cronSecret = String(process.env.CRON_SECRET || "");
   const auth = String(req.headers.authorization || "");
-  const q = (req.query && req.query.key) || "";
+  // ⚠️ 必须 String()：`?key=a&key=b` 时 req.query.key 是数组，
+  // 直接拿去 charCodeAt 会抛 TypeError —— 而这里在 handler 的 try 之外，只会回一个 500。
+  const q = String((req.query && req.query.key) ?? "");
 
   if (cronSecret && auth === `Bearer ${cronSecret}`) return { ok: true, via: "cron-secret" };
 

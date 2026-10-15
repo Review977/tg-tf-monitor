@@ -86,7 +86,7 @@
    | 变量 | 填什么 |
    |---|---|
    | `TG_TOKEN` | ✅ 第 ① 步拿到的 token |
-   | `ADMIN_KEY` | ✅ **随便敲一串随机字符**（例如 `openssl rand -hex 24` 的输出）。拿 chat_id 要用它 |
+   | `ADMIN_KEY` | ✅ **随机串，只用 `A-Z a-z 0-9 _ -`**（例如 `openssl rand -hex 24` 的输出）。拿 chat_id 要用它；它还会兼作 Webhook 的 `secret_token`，而 Telegram 不接受别的字符（`openssl rand -base64` 会带 `+ / =`，不能用） |
 
    > ⚠️ **只有这两项**，是刻意的：Cloudflare 会把 `.dev.vars.example` 里
    > **每个未注释的项都当必填**。而 `TG_CHAT_ID` 在部署时**根本还不知道**

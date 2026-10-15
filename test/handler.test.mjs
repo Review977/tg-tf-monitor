@@ -523,6 +523,37 @@ test(`[${label}] /set-commands 注册命令菜单（需 key）`, async () => {
     }
   });
 
+  test(`[${label}] ⭐ 回归：/add <名字> 建 App 级监控必须落盘（否则回复是假的）`, async () => {
+    // 实测过的 bug：这条分支 `return;` 返回 undefined，handleUpdate 的
+    // `if (res && res.mutated)` 于是不落盘 —— 回复说"已加入监控（App 级）"，
+    // 但请求一结束这条监控就没了（KV 一次都没写）。
+    const { f, calls } = makeFetchStub();
+    globalThis.fetch = f;
+    try {
+      const env = makeEnv();
+      const { ctx, settle } = makeCtx();
+      const res = await worker.fetch(
+        new Request("https://x.workers.dev/telegram", {
+          method: "POST",
+          headers: { "content-type": "application/json", "X-Telegram-Bot-Api-Secret-Token": "wh-secret" },
+          body: JSON.stringify({ message: { text: "/add 微信", chat: { id: -1001234567890 } } }),
+        }),
+        env, ctx
+      );
+      assert.equal(res.status, 200);
+      await settle();
+      const saved = env.STATE.map.get("state");
+      assert.ok(saved, "必须写盘一次（KV 里应能看到 state）");
+      const recs = Object.values(JSON.parse(saved).links || {});
+      assert.ok(recs.some((r) => r.kind === "app" && r.label === "微信"),
+        "App 级监控要真的存下来，实际：" + saved);
+      const sent = calls.filter((c) => c.url.includes("/sendMessage")).map(tgText).join("\n");
+      assert.match(sent, /已加入监控（App 级）/, "回复要如实说明加了什么");
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
   test(`[${label}] 未知路径 → 404 且给出可用端点`, async () => {
     const { f } = makeFetchStub();
     globalThis.fetch = f;

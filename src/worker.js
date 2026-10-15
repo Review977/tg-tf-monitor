@@ -103,6 +103,11 @@ export default {
       try {
         if (path === "/run") {
           const mode = url.searchParams.get("mode") || "all";
+          // ⚠️ 和 api/run.js 一样必须校验：不校验的话 `mode=typo` 会"什么都没跑"却回
+          // `OK mode=typo 事件=0`，用户以为跑过了一轮（Vercel 入口有这个校验，Workers 入口漏了）。
+          if (!["all", "monitor", "discovery"].includes(mode)) {
+            return text("mode 只能是 all / monitor / discovery", 400);
+          }
           const r = await doRun(env, { mode, log });
           return text(`OK mode=${r.mode} 事件=${r.events} 存储=${r.storage}`);
         }

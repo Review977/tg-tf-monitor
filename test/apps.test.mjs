@@ -1272,3 +1272,297 @@ test("新增的 /apps、/find 输出都能过 Telegram 的 HTML 校验", async (
     assert.ok(ok, "消息必须合法：" + why);
   }
 });
+
+// ───────────────────── ⭐ 2026-10-15 一轮 bug 审查的回归测试 ─────────────────────
+// 每条都对着一个**实测复现过**的缺陷写。共同点：都是"看起来在盯，其实没盯"
+// 或者"该报的没报"这类**静默**失败。
+
+test("⭐ 回归：App Store 版本更新告警发送失败后必须重发（不能永久丢失）", async () => {
+  const { runMonitor, normalizeState } = await import("../src/core.js");
+  const cfg = { watch: [], discovery: { useDepartures: false }, keywords: [] };
+  const state = normalizeState({
+    links: { abcdef: { label: "番茄小说", state: "invalid", appStoreId: 1468454200, firstSeen: "2026-10-01T00:00:00Z" } },
+    appstore: { "1468454200": { version: "7.3.9", checkedAt: "2026-10-01T00:00:00Z", name: "番茄小说", releaseDate: "2026-09-30" } },
+  });
+  const f = async (url) => String(url).includes("itunes.apple.com/lookup")
+    ? jsonRes({ results: [{ version: "7.4.0", trackName: "番茄小说", currentVersionReleaseDate: "2026-10-14T00:00:00Z", trackId: 1468454200 }] })
+    : new Response("not found", { status: 404 });
+  const got = [];
+  const failing = { dry: false, async send(t) { got.push(t); return false; } };
+  const ok = { dry: false, async send(t) { got.push(t); return true; } };
+
+  assert.equal(await runMonitor({ cfg, state, notifier: failing, fetchImpl: f, log: () => {} }), 0);
+  assert.equal(state.appstore["1468454200"].version, "7.3.9",
+    "发送失败时不能把新版本号写进去 —— 写了下一轮就不再报了（告警永久丢失）");
+  assert.equal(await runMonitor({ cfg, state, notifier: ok, fetchImpl: f, log: () => {} }), 1, "下一轮必须重发");
+  assert.equal(state.appstore["1468454200"].version, "7.4.0", "发送成功之后才写新版本号");
+  assert.equal(got.filter((t) => /正式版更新/.test(t)).length, 2, "两轮各发一次（第一次失败、第二次成功）");
+});
+
+test("⭐ 回归：/del 过的码不能被发现扫描复活（复活了也永远不会被轮询）", async () => {
+  const { registerDiscovery, monitorTargets, normalizeState } = await import("../src/core.js");
+  const state = normalizeState({ links: {}, removed: { "5MWjLpYl": "2026-10-14T10:00:00Z" } });
+  const sent = [];
+  const notifier = { dry: false, async send(t) { sent.push(t); return true; } };
+  const f = async (url) => String(url).includes("/join/")
+    ? htmlRes(load("open_zh.html")) : new Response("", { status: 404 });
+  const cfg = { watch: [], keywords: [], autoWatchKeywords: ["番茄小说"], autoWatchDiscovered: true };
+
+  const n = await registerDiscovery({ cfg, state, notifier, fetchImpl: f },
+    { source: "tfstore:番茄", code: "5MWjLpYl", appName: "番茄小说", context: "番茄小说 testflight" });
+
+  assert.equal(n, 0, "不该通知");
+  assert.equal(sent.length, 0, "不该发消息");
+  assert.ok(!state.links["5MWjLpYl"],
+    "墓碑必须挡住复活：复活后 /links 说『监控中』，monitorTargets 却按墓碑跳过它 —— 永远不轮询");
+  assert.equal(Object.keys(monitorTargets(cfg, state)).length, 0);
+});
+
+test("⭐ 回归：/status 里 App 级监控的状态也要按事实推导（不能写死 waiting）", async () => {
+  const { renderStatus, renderApps, normalizeState } = await import("../src/core.js");
+  const state = normalizeState({
+    links: {
+      "app:414478124": { kind: "app", label: "微信", appName: "微信", state: "waiting", codes: ["7Jg9MM8h"], firstSeen: "2026-10-14T08:00:00Z" },
+      "7Jg9MM8h": { label: "微信读书", state: "full", firstSeen: "2026-10-14T08:05:00Z" },
+    },
+  });
+  const st = renderStatus({}, state);
+  assert.match(st, /微信<\/b> — 已找到链接 🔗/, "/status 也要显示『已找到链接』：\n" + st);
+  assert.ok(!/等待可用链接/.test(st), "不能出现『等待可用链接 + 已找到链接』这种自相矛盾：\n" + st);
+  assert.match(renderApps(state), /微信<\/b> — 已找到链接 🔗/, "/apps 与 /status 必须一致");
+});
+
+test("⭐ 回归：/add <裸字母数字> 探测失败时不能猜成 join 码", async () => {
+  const state = normalizeState({ links: {} });
+  const msgs = [];
+  const f = async (url) => {
+    if (String(url).includes("testflight.apple.com")) throw new Error("network timeout");
+    return new Response("", { status: 200 });
+  };
+  const res = await handleCommand({
+    cfg: { telegram: {} }, state,
+    notifier: { dry: true, async send(t) { msgs.push(t); return true; } },
+    text: "/add Telegram", fetchImpl: f, log: () => {},
+  });
+  assert.deepEqual(Object.keys(state.links), [],
+    "探测失败时既不能当 join 码（建一条 https://…/join/Telegram 的垃圾记录），也不该瞎猜名字");
+  assert.ok(!(res && res.mutated), "什么都没加，就不该回写 state");
+  assert.match(msgs.join("\n"), /探测 .*失败/, "要如实说清是探测失败并给出两条出路：\n" + msgs.join("\n"));
+});
+
+test("⭐ 回归：TIMEZONE=UTC 不能被静默换成 UTC+8", async () => {
+  const { loadConfig } = await import("../src/config.js");
+  const { setDisplayTimeZone, nowStr, tzLabel } = await import("../src/core.js");
+  const d = new Date("2026-10-14T08:24:00Z");
+  try {
+    const cfg = loadConfig({ TIMEZONE: "UTC" });
+    setDisplayTimeZone(cfg.timezone, cfg.utcOffsetMinutes);
+    assert.equal(nowStr(d), "2026-10-14 08:24", "配了 UTC 就该显示 UTC 时间");
+    assert.equal(tzLabel(d), "UTC+0");
+    // 显式给了偏移就以显式值为准
+    const cfg2 = loadConfig({ TIMEZONE: "UTC", UTC_OFFSET_MINUTES: "330" });
+    setDisplayTimeZone(cfg2.timezone, cfg2.utcOffsetMinutes);
+    assert.equal(tzLabel(d), "UTC+5:30");
+  } finally {
+    setDisplayTimeZone("Asia/Shanghai", 480);
+  }
+});
+
+test("⭐ 回归：没改动 state 的命令不能回写整份 state（/del 打错字也一样）", async () => {
+  for (const text of ["/del 不存在的码", "/del", "/joined", "/add"]) {
+    const state = normalizeState({ links: { abcdef: { label: "A", state: "open" } } });
+    const res = await handleCommand({
+      cfg: { telegram: {} }, state,
+      notifier: { dry: true, async send() { return true; } },
+      text, log: () => {},
+    });
+    assert.ok(!(res && res.mutated),
+      `${text} 什么都没改，不该报 mutated（回写会覆盖并发期间 cron 写下的更新）：${JSON.stringify(res)}`);
+  }
+  // 对照：真的改了就要报
+  const s2 = normalizeState({ links: { abcdef: { label: "A", state: "open" } } });
+  const r2 = await handleCommand({
+    cfg: { telegram: {} }, state: s2,
+    notifier: { dry: true, async send() { return true; } },
+    text: "/del abcdef", log: () => {},
+  });
+  assert.ok(r2 && r2.mutated, "真删掉了就必须报 mutated");
+  assert.ok(!s2.links.abcdef);
+});
+
+test("⭐ 回归：joined 的静音继承要按 sameAppName 判身份（不能用 includes）", async () => {
+  const { registerDiscovery, sameAppName, normalizeState } = await import("../src/core.js");
+  const cfg = { watch: [], keywords: [], autoWatchKeywords: ["番茄小说"], autoWatchDiscovered: true };
+  const f = async (url) => String(url).includes("/join/")
+    ? htmlRes(load("open_zh.html")) : new Response("", { status: 404 });
+  const notifier = { dry: false, async send() { return true; } };
+  assert.equal(sameAppName("番茄", "番茄小说 - 热门短剧"), false, "这两个名字按项目自己的规则不是同一个 App");
+
+  const s1 = normalizeState({ links: { "app:1": { kind: "app", label: "番茄", appName: "番茄", joined: true, codes: [] } } });
+  await registerDiscovery({ cfg, state: s1, notifier, fetchImpl: f },
+    { source: "tfstore", code: "Abc12345", appName: "番茄小说 - 热门短剧", context: "番茄小说" });
+  assert.ok(s1.links["Abc12345"] && !s1.links["Abc12345"].joined,
+    "别的 App 的新链接不该被静音（否则它满员/开放都不再提醒）");
+
+  // 真正同一个 App（前缀 + 紧跟分隔符）仍然要一并静音
+  const s2 = normalizeState({ links: { "app:1": { kind: "app", label: "番茄小说", appName: "番茄小说", joined: true, codes: [] } } });
+  await registerDiscovery({ cfg, state: s2, notifier, fetchImpl: f },
+    { source: "tfstore", code: "Zz987654", appName: "番茄小说 - 热门短剧", context: "番茄小说" });
+  assert.equal(s2.links["Zz987654"].joined, true, "同一个 App 的别的链接要一并静音");
+});
+
+test("⭐ 回归：自动加入监控的发现告警发送失败后，下一轮必须真的重发（不能被 state.links 挡住）", async () => {
+  const { registerDiscovery, normalizeState } = await import("../src/core.js");
+  const cfg = { watch: [], keywords: [], autoWatchKeywords: ["番茄小说"], autoWatchDiscovered: true };
+  const f = async (url) => String(url).includes("/join/")
+    ? htmlRes(load("open_zh.html")) : new Response("", { status: 404 });
+  const state = normalizeState(null);
+  const item = () => ({ source: "tfstore:番茄", code: "5MWjLpYl", appName: "番茄小说", context: "番茄小说" });
+
+  assert.equal(await registerDiscovery({
+    cfg, state, notifier: { dry: false, async send() { return false; } }, fetchImpl: f, log: () => {},
+  }, item()), 0);
+  assert.ok(state.links["5MWjLpYl"], "命中 autoWatchKeywords 时会先把码自动加进监控");
+  assert.equal(state.discoveries["5MWjLpYl"].notified, false, "没发出去要记成未通知");
+
+  const sent = [];
+  assert.equal(await registerDiscovery({
+    cfg, state, notifier: { dry: false, async send(t) { sent.push(t); return true; } }, fetchImpl: f, log: () => {},
+  }, item()), 1, "下一轮必须重发 —— 否则『链接开放时告诉你』这条核心承诺会永久丢失");
+  assert.equal(state.discoveries["5MWjLpYl"].notified, true);
+  assert.match(sent.join("\n"), /🆕 发现新的 TF 链接/,
+    "这是重发、不是状态变化，标题不该写『之前发现的链接状态变了』：\n" + sent.join("\n"));
+});
+
+test("⭐ 回归：重新 /add 时探测失败，不能把好状态和 desc 基线冲掉", async () => {
+  const { handleCommand, runMonitor, normalizeState } = await import("../src/core.js");
+  const state = normalizeState({
+    links: {
+      dTUO1uyt: {
+        label: "番茄小说", state: "open", desc: "旧说明：内测名额已发放", descHash: "deadbeef",
+        sources: ["manual"], stateSince: "2026-10-01T00:00:00Z",
+      },
+    },
+  });
+  const bad = async (url) => {
+    if (String(url).includes("testflight.apple.com")) throw new Error("network timeout");
+    return new Response("", { status: 429 });
+  };
+  await handleCommand({
+    cfg: { telegram: {} }, state, notifier: { dry: true, async send() { return true; } },
+    text: "/add dTUO1uyt", fetchImpl: bad, log: () => {},
+  });
+  assert.equal(state.links.dTUO1uyt.state, "open", "探测失败不能把 open 写成 error");
+  assert.equal(state.links.dTUO1uyt.desc, "旧说明：内测名额已发放", "desc 基线不能被空串冲掉");
+  assert.equal(state.links.dTUO1uyt.descHash, "deadbeef");
+
+  const sent = [];
+  const good = async (url) => String(url).includes("/join/")
+    ? htmlRes(load("open_zh.html")) : new Response("", { status: 404 });
+  await runMonitor({
+    cfg: { watch: [], keywords: [] }, state,
+    notifier: { dry: false, async send(t) { sent.push(t); return true; } }, fetchImpl: good, log: () => {},
+  });
+  assert.ok(!/状态变化/.test(sent.join("\n")),
+    "不能推一条假的『检查失败 ⚠️ → 可加入 ✅』：\n" + sent.join("\n"));
+});
+
+test("⭐ 回归：/links 里 App 级监控也不能写死 waiting", async () => {
+  const { renderLinks, normalizeState } = await import("../src/core.js");
+  const out = renderLinks(normalizeState({
+    links: {
+      "app:414478124": { kind: "app", label: "微信", state: "waiting", codes: ["7Jg9MM8h"], firstSeen: "2026-10-14T08:00:00Z" },
+      "7Jg9MM8h": { label: "微信读书", state: "full", firstSeen: "2026-10-14T08:05:00Z" },
+    },
+  }));
+  assert.match(out, /已找到链接 🔗/, "/links 也要按事实推导：\n" + out);
+  assert.ok(!/等待可用链接/.test(out), "不能自相矛盾：\n" + out);
+});
+
+// ═══════════════ 第三轮 bug 审查后的回归测试（2026-10-15）═══════════════
+
+test("⭐ 回归：/add <链接> 探测失败时，新记录不能带 error 状态（否则下一轮推假告警）", async () => {
+  // 上一轮修了"重新 /add 时不能冲掉已有状态"，但漏了**新建记录**这一半：
+  // 新建时照抄 e.state="error"，下一轮成功探测就推一条假的「检查失败 ⚠️ → 可加入 ✅」。
+  const { handleCommand, runMonitor, normalizeState } = await import("../src/core.js");
+  const state = normalizeState(null);
+  const bad = async (url) => {
+    if (String(url).includes("testflight.apple.com")) throw new Error("network timeout");
+    return new Response("", { status: 429 });
+  };
+  await handleCommand({
+    cfg: { telegram: {} }, state, notifier: { dry: true, async send() { return true; } },
+    text: "/add https://testflight.apple.com/join/NEWCODE1", fetchImpl: bad, log: () => {},
+  });
+  assert.equal(state.links.NEWCODE1.state, undefined,
+    "没探测成功过就不该有状态（写 error = 下一轮会推一条假的『检查失败 → 可加入』）");
+  assert.equal(state.links.NEWCODE1.stateSince, undefined, "没有状态就不该有『状态已保持』");
+
+  const sent = [];
+  const good = async (url) => String(url).includes("/join/")
+    ? htmlRes(load("open_zh.html")) : new Response("", { status: 404 });
+  await runMonitor({
+    cfg: { watch: [], keywords: [] }, state,
+    notifier: { dry: false, async send(t) { sent.push(t); return true; } }, fetchImpl: good, log: () => {},
+  });
+  assert.ok(!/状态变化/.test(sent.join("\n")), "首次探测成功不能报成『状态变化』：\n" + sent.join("\n"));
+  assert.equal(state.links.NEWCODE1.state, "open");
+});
+
+test("⭐ 回归：页面里超范围的数字实体不能让整轮探测抛出去（&#1114112;）", async () => {
+  // 发现源的输入是**别人网页上的任意文本**；一个超范围实体让 probeJoin 抛 RangeError，
+  // 整轮监控/扫描就在中途炸掉、state 一次都不落盘（已发的告警下一轮还会重发）。
+  const { unescapeEntities, parseJoinPage, probeJoin } = await import("../src/core.js");
+  assert.equal(unescapeEntities("a&#1114112;b"), "ab");
+  assert.equal(unescapeEntities("a&#x110000;b"), "ab");
+  assert.equal(unescapeEntities("a&#65;b"), "aAb", "正常实体照常解");
+  const html = `<html><title>Join the &#1114112; Beta</title><div class="beta-status"><span>&#1114112;</span></div></html>`;
+  assert.doesNotThrow(() => parseJoinPage(html, 200));
+  const r = await probeJoin("ABCDEFG", { fetchImpl: async () => htmlRes(html) });
+  assert.ok(r.state, "探测要能正常返回状态：" + JSON.stringify(r));
+});
+
+test("⭐ 回归：长得像 join 码但 Apple 404 时，按名字加也要说清（别让人以为链接加上了）", async () => {
+  const { handleCommand, normalizeState } = await import("../src/core.js");
+  const state = normalizeState(null);
+  const sent = [];
+  const f = async (url) => {
+    const s = String(url);
+    if (s.includes("testflight.apple.com/join/")) return new Response("", { status: 404 });
+    if (s.includes("itunes.apple.com")) return jsonRes({ resultCount: 0, results: [] });
+    if (s.includes("departures.to/search")) return htmlRes("");
+    if (s.includes("tfstore.top")) return htmlRes("");
+    return new Response("", { status: 404 });
+  };
+  await handleCommand({
+    cfg: { telegram: {} }, state, notifier: { dry: false, async send(t) { sent.push(t); return true; } },
+    text: "/add dTUO1uyt", fetchImpl: f, log: () => {},
+  });
+  const all = sent.join("\n");
+  assert.ok(/404/.test(all), "要说明 Apple 那边 404（链接失效或拼错）：\n" + all);
+  assert.ok(/App 名字/.test(all), "要说清这次是按 App 名字记下的：\n" + all);
+});
+
+test("⭐ 回归：discoveries 裁剪不能先淘汰已知 open 的码（否则会被当「新发现」重报）", async () => {
+  // 窗口一满，排序会退化成"按插入顺序"（时间戳只到秒），最早那个 open 码第一个被淘汰，
+  // 下一轮又被当成「🆕 发现新的 TF 链接」重报 —— 实测复现过。
+  const { registerDiscovery, normalizeState } = await import("../src/core.js");
+  const state = normalizeState(null);
+  const cfg = { watch: [], keywords: [], autoWatchKeywords: [], autoWatchDiscovered: false };
+  const f = async (u) => {
+    const s = String(u);
+    if (!s.includes("/join/")) return new Response("", { status: 404 });
+    return htmlRes(s.endsWith("/KEEPCODE") ? load("open_zh.html") : load("full_zh.html"));
+  };
+  const fire = async (code) => {
+    const sent = [];
+    const n = await registerDiscovery({ cfg, state, notifier: { dry: false, async send(t) { sent.push(t); return true; } }, fetchImpl: f },
+      { source: "tfstore", code, appName: "某App" + code, context: "" });
+    return { n, sent };
+  };
+  assert.equal((await fire("KEEPCODE")).n, 1, "首次发现可加入要提醒");
+  for (let i = 0; i < 80; i++) { await fire("NEW" + i); await fire("KEEPCODE"); }
+  assert.ok(state.discoveries.KEEPCODE, "已知 open 的码不能被裁掉");
+  const again = await fire("KEEPCODE");
+  assert.equal(again.n, 0, "它已经通知过了，不能再报一次：" + again.sent.join("\n"));
+});

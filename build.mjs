@@ -17,7 +17,8 @@
 
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { createHash } from "node:crypto";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve, relative } from "node:path";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -55,6 +56,18 @@ for (const rel of ORDER) {
   for (const spec of imports) {
     if (!spec.startsWith(".")) {
       throw new Error(`${rel} 引用了外部包 ${spec} —— 单文件包不支持依赖，请改成零依赖`);
+    }
+    // ⚠️ 相对 import 还必须**落在 ORDER 里**。不在 ORDER 的模块不会被拼进产物：
+    // 它的 import 行被剥掉了、模块体又没进来 —— 产物照样能过 `node --check`
+    // （那只查语法），要等运行到那一行才 ReferenceError。
+    // 实测：往 src/ 加一个 extra.js 并在 runner.js 里 import，构建仍报 "✅ 语法通过"，
+    // 产物 import 时报 `extraHelper is not defined`，CI 的"产物与源码同步"也照过。
+    const target = relative(HERE, resolve(dirname(p), spec)).replace(/\\/g, "/");
+    if (!ORDER.includes(target)) {
+      throw new Error(
+        `${rel} 引用了 ${spec}（= ${target}），但它不在 build.mjs 的 ORDER 里 —— 不会被拼进产物。\n` +
+        `  修法：把它按依赖顺序加进 ORDER。`
+      );
     }
   }
 
@@ -100,22 +113,39 @@ for (const { rel, src } of sources) {
 }
 
 const out = header + parts.join("\n");
-mkdirSync(join(HERE, "dist"), { recursive: true });
-const outPath = join(HERE, "dist", "worker.js");
-writeFileSync(outPath, out, "utf8");
 
-// 自检：产物必须能被当成 ESM 解析，且恰好有一个 export default
-writeFileSync(join(HERE, "dist", ".verify.mjs"), out, "utf8");
-const { execFileSync } = await import("node:child_process");
-try {
-  execFileSync(process.execPath, ["--check", join(HERE, "dist", ".verify.mjs")], { stdio: "pipe" });
-} catch (e) {
-  console.error("✗ 产物语法检查失败：");
-  console.error(String(e.stderr || e.message));
+// ⚠️ 拼接后自检：产物里不能再有模块语句。IMPORT_RE 只认 `import … from "…"` 这一种写法，
+// 所以 `import "left-pad";`（裸 import）和 `export * from "./x.js"` 会**原样留在产物里** ——
+// 前者还能绕过上面"引用了外部包"的检查（那个检查只匹配 from "…"），
+// 产物一 import 就 ERR_MODULE_NOT_FOUND。这里兜底拦住。
+const leftover = out.match(/^[ \t]*(?:import\b[^\n]*|export\s+(?:\*|\{[^}]*\})\s+from\b[^\n]*)$/gm);
+if (leftover) {
+  console.error("✗ 产物里还有没被剥掉的模块语句（单文件包不支持）：");
+  console.error(leftover.slice(0, 5).map((l) => "  " + l.trim()).join("\n"));
+  console.error("  修法：只支持 `import { x } from \"./m.js\";` 与 `export function/const/class …` 这两种写法。");
   process.exit(1);
+}
+
+// 自检：产物必须能被当成 ESM 解析，且恰好有一个 export default。
+// ⚠️ 顺序很重要：**先检查、通过了再写 dist/worker.js**。以前是先写 dist 再检查，
+// 语法不过时 dist/worker.js 已经被覆盖成坏产物、dist/.verify.mjs 还留在 dist/ 里
+// （process.exit() 不会展开 finally），下次 rsync / git add -A 就把那个临时文件带进公开仓库。
+const { execFileSync } = await import("node:child_process");
+const { unlinkSync } = await import("node:fs");
+const tmpVerify = join(tmpdir(), `tg-tf-verify-${process.pid}.mjs`);
+let syntaxErr = null;
+try {
+  writeFileSync(tmpVerify, out, "utf8");
+  execFileSync(process.execPath, ["--check", tmpVerify], { stdio: "pipe" });
+} catch (e) {
+  syntaxErr = String(e.stderr || e.message);
 } finally {
-  const { unlinkSync } = await import("node:fs");
-  try { unlinkSync(join(HERE, "dist", ".verify.mjs")); } catch { /* ignore */ }
+  try { unlinkSync(tmpVerify); } catch { /* ignore */ }
+}
+if (syntaxErr) {
+  console.error("✗ 产物语法检查失败（dist/worker.js 未被改动）：");
+  console.error(syntaxErr);
+  process.exit(1);
 }
 
 const defaults = (out.match(/^export default/gm) || []).length;
@@ -123,6 +153,9 @@ if (defaults !== 1) {
   console.error(`✗ 产物里 export default 出现 ${defaults} 次，应恰好 1 次`);
   process.exit(1);
 }
+
+mkdirSync(join(HERE, "dist"), { recursive: true });
+writeFileSync(join(HERE, "dist", "worker.js"), out, "utf8");
 
 console.log("✅ 已生成 dist/worker.js");
 console.log(`   大小 ${(out.length / 1024).toFixed(1)} KB，拼接 ${ORDER.length} 个模块，无撞名，语法通过`);

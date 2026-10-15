@@ -30,6 +30,24 @@ export function kvStorage(kv) {
 }
 
 /**
+ * 解析 Upstash 的响应。
+ *
+ * ⚠️ **必须先看 `res.ok` 再 `res.json()`**：Upstash 边缘节点 5xx / 网关错误返回的是 HTML，
+ * 直接 `res.json()` 会抛一个「Unexpected token '<'」的 SyntaxError ——
+ * 看日志的人完全不知道是存储挂了，而 doRun 会因为这一句整轮中断（这一轮的告警全丢，
+ * 要等下一轮才重试）。这里把非 2xx 和非 JSON 都翻译成一句能看懂的话。
+ */
+async function upstashJson(res, what) {
+  const text = await res.text();
+  if (!res.ok) throw new Error(`Upstash ${what}失败：HTTP ${res.status} ${text.slice(0, 120)}`);
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new Error(`Upstash ${what}返回的不是 JSON（HTTP ${res.status}）：${text.slice(0, 120)}`);
+  }
+}
+
+/**
  * Upstash Redis（REST API，纯 fetch，不需要 SDK）
  * 需要两个环境变量：UPSTASH_REDIS_REST_URL / UPSTASH_REDIS_REST_TOKEN
  */
@@ -44,7 +62,7 @@ export function redisStorage({ url, token, fetchImpl }) {
     kind: "upstash-redis",
     async load() {
       const res = await f(`${base}/get/${KEY}`, { headers: auth });
-      const json = await res.json();
+      const json = await upstashJson(res, "读取");
       if (json.error) throw new Error("Upstash 读取失败: " + json.error);
       const raw = json.result;
       if (!raw) return normalizeState(null);
@@ -61,7 +79,7 @@ export function redisStorage({ url, token, fetchImpl }) {
         headers: { ...auth, "content-type": "text/plain" },
         body: JSON.stringify(state),
       });
-      const json = await res.json();
+      const json = await upstashJson(res, "写入");
       if (json.error) throw new Error("Upstash 写入失败: " + json.error);
     },
   };

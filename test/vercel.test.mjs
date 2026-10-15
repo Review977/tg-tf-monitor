@@ -511,3 +511,43 @@ test("Upstash 存储：存的东西坏了 → 当空状态重建，不整个崩�
 test("Upstash 存储：缺配置时明确报错", () => {
   assert.throws(() => redisStorage({ url: "", token: "" }), /Upstash/);
 });
+
+// ═══════════════ 第三轮 bug 审查后的回归测试（2026-10-15）═══════════════
+
+test("⭐ 回归：secret_token 含 Telegram 不允许的字符时，要拦住并说清（不能让它 400 掉 webhook）", async () => {
+  // Bot API 规定 secret_token 只允许 A-Z a-z 0-9 _ -；我们把它回落到 ADMIN_KEY，
+  // 而 README 让人"随便敲一串随机字符"。含 ! # + / 时 Telegram 会 400，
+  // 结果是 webhook 永远设不上、bot 收不到任何命令，用户只看到一句 500。
+  const { setWebhook, webhookSecretProblem } = await import("../src/runner.js");
+  assert.equal(webhookSecretProblem("s3cret-key_1"), "");
+  assert.match(webhookSecretProblem("Fqxs!2026#key"), /!|#/);
+
+  let called = false;
+  const f = async () => { called = true; return new Response(JSON.stringify({ ok: true, result: true }), { status: 200 }); };
+  await assert.rejects(
+    () => setWebhook({ TG_TOKEN: "t", ADMIN_KEY: "Fqxs!2026#key" }, "https://x/telegram", { fetchImpl: f }),
+    /secret_token 不合法/
+  );
+  assert.equal(called, false, "不合法的值不能真的发给 Telegram");
+});
+
+test("⭐ 回归：Upstash 返回 5xx/HTML 时要报一句能看懂的错（不是 Unexpected token '<'）", async () => {
+  const f = async () => new Response("<html>bad gateway</html>", { status: 502, headers: { "content-type": "text/html" } });
+  const store = redisStorage({ url: "https://x.upstash.io", token: "tok", fetchImpl: f });
+  await assert.rejects(() => store.load(), (e) => {
+    assert.match(e.message, /Upstash 读取失败/);
+    assert.ok(!/Unexpected token/.test(e.message), "不能把 JSON 解析错原样抛出来：" + e.message);
+    return true;
+  });
+  await assert.rejects(() => store.save({ links: {} }), /Upstash 写入失败/);
+});
+
+test("⭐ 回归：?key 重复出现（数组）时不能 500", async () => {
+  // `?key=a&key=b` 时 req.query.key 是数组，authorized() 在 try 之外直接 charCodeAt
+  // 会抛 TypeError -> Vercel 只回 500、日志里什么都没有。现在按字符串处理 -> 正常 403。
+  await withEnv({ ...BASE_ENV, ADMIN_KEY: "ab", TG_WEBHOOK_SECRET: undefined }, async () => {
+    const res = mockRes();
+    await runHandler({ method: "GET", headers: {}, query: { key: ["a", "b"] } }, res);
+    assert.equal(res.statusCode, 403, "应该是 403 而不是 500：" + JSON.stringify(res.body));
+  });
+});

@@ -162,6 +162,26 @@ export function webhookSecret(env = {}) {
 }
 
 /**
+ * Telegram 对 `secret_token` 的字符集有硬要求：**1-256 个字符，只允许 A-Z a-z 0-9 _ -**。
+ *
+ * ⚠️ 我们把 `ADMIN_KEY` 回落成它，而 README 让人"随便敲一串随机字符" ——
+ * 一旦含 `!` `#` `+` `/` `=`（`openssl rand -base64` 的输出必含），`setWebhook` 会被
+ * Telegram 用 400 拒掉：**webhook 永远设不上、bot 收不到任何命令**，
+ * 而用户只看到一句 500，完全不知道是 key 的字符问题。
+ * 这里在发出去之前就拦住并说清怎么改。
+ */
+export function webhookSecretProblem(secret) {
+  const s = String(secret || "");
+  if (!s) return "";
+  if (s.length > 256) return `太长（Telegram 上限 256 字符，现在是 ${s.length}）`;
+  if (!/^[A-Za-z0-9_-]+$/.test(s)) {
+    const bad = [...new Set(s.replace(/[A-Za-z0-9_-]/g, ""))].join(" ");
+    return `含 Telegram 不允许的字符：${bad}（只允许 A-Z a-z 0-9 _ -）`;
+  }
+  return "";
+}
+
+/**
  * 运维端点（`/run` `/set-webhook` `/chat-id` `/set-commands`）比对的 key。
  *
  * ⚠️ 优先级和 `webhookSecret()` **正好相反** —— 这两件事各有所属：
@@ -176,6 +196,15 @@ export function adminKey(env = {}) {
 export async function setWebhook(env = {}, url, opts = {}) {
   const cfg = loadConfig(env);
   const secret = webhookSecret(env);
+  const problem = webhookSecretProblem(secret);
+  if (problem) {
+    throw new Error(
+      `Webhook 的 secret_token 不合法：${problem}\n` +
+      `  把 TG_WEBHOOK_SECRET（没配时回落用的 ADMIN_KEY）改成只用字母数字下划线连字符的随机串，` +
+      `例如：openssl rand -hex 24\n` +
+      `  （不改的话 Telegram 会 400 拒掉，webhook 设不上 —— bot 收不到任何命令。）`
+    );
+  }
   const params = {
     url,
     allowed_updates: JSON.stringify(["message", "channel_post"]),
@@ -369,7 +398,16 @@ export async function health(env = {}, opts = {}) {
   if (!env.ADMIN_KEY && !env.TG_WEBHOOK_SECRET) {
     notes.push("ADMIN_KEY 与 TG_WEBHOOK_SECRET 都没设：运维端点（/run、/set-webhook、/chat-id、/set-commands）一律拒绝，无法使用。");
   }
-  if (isPlaceholder(env.TG_CHAT_ID)) {
+  const secretProblem = webhookSecretProblem(webhookSecret(env));
+  if (secretProblem) {
+    notes.push(`Webhook 的 secret_token 不合法（${secretProblem}）：/set-webhook 会被这里拦住，` +
+      `因为 Telegram 只接受 A-Z a-z 0-9 _ -。请改成 openssl rand -hex 24 这样的值。`);
+  }
+  // ⚠️ 要看**配置里生效的** chatId，不是环境变量：chatId 也可以从 CONFIG_JSON 里来，
+  // 只读 env.TG_CHAT_ID 会对已经配好的人误报"TG_CHAT_ID 还是空的"，
+  // 把人引向错误的排查方向（实测复现）。
+  const configuredChat = cfg ? (cfg.telegram && cfg.telegram.chatId) : env.TG_CHAT_ID;
+  if (isPlaceholder(configuredChat)) {
     notes.push("TG_CHAT_ID 还是空的或占位值 —— 先在 TG 里给 bot 发条消息，再打开 /chat-id?key=… 拿数字填进来。");
   }
   if (notes.length) out.notes = notes;

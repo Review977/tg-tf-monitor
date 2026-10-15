@@ -47,10 +47,23 @@ export function htmlToPlain(s) {
   return unescapeEntities(String(s || "").replace(/<[^>]+>/g, ""));
 }
 
+/**
+ * 数字实体 → 字符。**超范围的码点必须挡住。**
+ *
+ * ⚠️ `String.fromCodePoint()` 对 > U+10FFFF 的值会抛 RangeError，而这里的输入是
+ * **别人网页上的任意文本**（公测页、搜索结果摘要、TG 频道正文）。实测：页面里出现一个
+ * `&#1114112;` 就让 `probeJoin()` 直接抛出去 —— 后果不是少显示一个字，而是
+ * **整轮监控/扫描在中途炸掉、state 一次都不落盘**，已经发出去的告警下一轮还会重发一遍。
+ * 挡不住的实体直接丢掉（宁可少一个字，也不能让一整轮白跑）。
+ */
+function codePointChar(n) {
+  return Number.isInteger(n) && n >= 0 && n <= 0x10ffff ? String.fromCodePoint(n) : "";
+}
+
 export function unescapeEntities(s) {
   return String(s || "")
-    .replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(Number(d)))
-    .replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCodePoint(parseInt(h, 16)))
+    .replace(/&#(\d+);/g, (_, d) => codePointChar(Number(d)))
+    .replace(/&#x([0-9a-f]+);/gi, (_, h) => codePointChar(parseInt(h, 16)))
     .replace(/&lt;/g, "<")
     .replace(/&gt;/g, ">")
     .replace(/&quot;/g, '"')
@@ -776,6 +789,27 @@ function sortCodesByLabel(state) {
   });
 }
 
+/**
+ * App 级监控（`/add <名字>` 加的、当时还没有链接的那种）**现在真的在监控里**的码。
+ *
+ * ⚠️ 为什么必须共享这一个函数：`/del` 掉链接之后 wish.codes 里会留下"幽灵码"，
+ * 只有按 state.links 过滤才是事实。两处（/apps 与 /status）各写一份的话，
+ * 迟早又只剩一边是对的 —— 上次就正是这样：renderApps 修了，/status 没修。
+ */
+export function liveWishCodes(rec, state) {
+  if (!rec || rec.kind !== "app") return [];
+  return (rec.codes || []).filter((c) => state && state.links && state.links[c]);
+}
+
+/**
+ * App 级监控的**显示状态**：推导，不照抄存储值。
+ * 存储里的 `state: "waiting"` 是创建时写死的，找到链接之后也不变 —— 照抄它就会说谎。
+ */
+export function appWatchState(rec, state) {
+  if (!rec || rec.kind !== "app") return rec ? rec.state : "";
+  return liveWishCodes(rec, state).length ? "found" : "waiting";
+}
+
 export function renderApps(state) {
   // 按**加入时间**排（见 sortCodesByLabel 的说明）
   const codes = sortCodesByLabel(state);
@@ -786,8 +820,8 @@ export function renderApps(state) {
     L.push("");
     // App 级监控的状态是**推导**出来的：有还在监控的码就是"已找到链接"，否则"等待可用链接"。
     // 写死 state:"waiting" 会在找到链接之后继续说谎。
-    const liveCodes = r.kind === "app" ? (r.codes || []).filter((c) => state.links[c]) : [];
-    const shownState = r.kind === "app" ? (liveCodes.length ? "found" : "waiting") : r.state;
+    const liveCodes = liveWishCodes(r, state);
+    const shownState = appWatchState(r, state);
     L.push(`${i + 1}. <b>${esc(r.label || r.appName || code)}</b> — ${STATE_LABEL[shownState] || shownState || "未检查"}`);
     if (r.kind === "app") {
       // App 级监控没有具体链接 —— 别用 key 拼一个假 URL 出来
@@ -795,7 +829,7 @@ export function renderApps(state) {
       // ⚠️ 只显示**现在真的在监控里**的码。
       // 以前直接显示 r.codes，于是 /del 掉链接之后这里还挂着一个幽灵码，
       // 状态却写着"等待可用链接" —— 自相矛盾（实测截图）。
-      const live = (r.codes || []).filter((c) => state.links[c]);
+      const live = liveCodes;
       if (live.length) {
         L.push(`   已找到的链接：${live.map((c) => `<code>${esc(c)}</code>`).join("、")}`);
       } else {
@@ -1618,7 +1652,7 @@ export async function runMonitor({ cfg, state, notifier, log = () => {}, fetchIm
       continue;
     }
     const old = state.appstore[String(aid)] || {};
-    state.appstore[String(aid)] = { version: cur.version, checkedAt: nowStamp(), name: cur.name, releaseDate: cur.releaseDate || "" };
+    const next = { version: cur.version, checkedAt: nowStamp(), name: cur.name, releaseDate: cur.releaseDate || "" };
     // 这个 App Store id 下的监控项如果**全都**标记了"已加入"，版本更新也不用提醒了
     const allJoined = Object.values(state.links || {}).some((r) => String(r.appStoreId) === String(aid)) &&
       Object.values(state.links || {}).filter((r) => String(r.appStoreId) === String(aid)).every((r) => r.joined);
@@ -1630,9 +1664,20 @@ export async function runMonitor({ cfg, state, notifier, log = () => {}, fetchIm
         "<i>TF 上通常已经在测这个新版本（或更高的 beta）；TF 构建号 Apple 不公开，只能在 TestFlight App 里看。</i>",
         `时间：${nowStr()}`,
       ];
-      if (await notifier.send(msg.join("\n"))) events++;
-    } else if (!old.version) {
-      log(`  记录 ${cur.name || aid} 正式版基线：${cur.version}`);
+      // ⚠️ 版本号要**发送成功之后**才写：以前先写 state.appstore 再发，
+      // 一次 Telegram 429/5xx 就让这条告警**永久丢失** —— 下一轮 old.version 已经等于新版本，
+      // 再也不会报（和"状态变化告警"当初的 bug 是同一类，这里是漏掉的一处）。
+      if (await notifier.send(msg.join("\n"))) {
+        events++;
+        state.appstore[String(aid)] = next;
+      } else {
+        // 发送失败：保留旧版本号（只刷新 checkedAt），下一轮会重试
+        state.appstore[String(aid)] = { ...next, version: old.version };
+        log("  ⚠️ 版本更新告警发送失败，保留旧版本号，下一轮会重试");
+      }
+    } else {
+      state.appstore[String(aid)] = next;
+      if (!old.version) log(`  记录 ${cur.name || aid} 正式版基线：${cur.version}`);
     }
   }
 
@@ -1643,10 +1688,42 @@ export async function runMonitor({ cfg, state, notifier, log = () => {}, fetchIm
 
 // ─────────────────────────── 发现 ───────────────────────────
 
+/**
+ * 这条发现记录里是不是**有一条该发、却没发出去的告警**（= 下一轮要重发）？
+ *
+ * ⚠️ 判据不能是 `notified === false` —— 那个字段在两种完全不同的情况下都是 false：
+ *   ① 该发但发送失败（要重试）
+ *   ② 首次发现就是满员/已关闭，按设计**只记录、不打扰**（没有告警要发，不该重试）
+ * 混在一起的后果实测过：②的码后来变成可加入时，标题会写成「🆕 发现新的 TF 链接」
+ * （其实是老码状态变了），而且它一旦进了监控列表还会被重发一遍。
+ * `test/apps.test.mjs` 里「满员→可加入必须提醒」和「发送失败下一轮必须重发」两条
+ * 正好把这两种情况钉在一起，所以必须用两个字段分开表达。
+ *
+ * 兼容老记录：没有 `unsent` 时，`notified === false` 仍当成有待发告警 ——
+ * 宁可多发一次，也不能把「链接开放了」这条核心告警永久丢掉。
+ */
+export function hasUnsentAlert(rec) {
+  if (!rec) return false;
+  if (rec.unsent !== undefined) return rec.unsent === true;
+  return rec.notified === false;
+}
+
 export async function registerDiscovery({ cfg, state, notifier, log = () => {}, fetchImpl }, item) {
   const code = item.code;
   if (!code) return 0;
-  if (state.links[code] || knownCodes(cfg).has(code)) return 0;
+  if (state.links[code] || knownCodes(cfg).has(code)) {
+    // ⚠️ 一个必须放行的例外：上一轮"发现扫描把它自动加进了监控、但那条告警没发出去"。
+    // 这时 code 已经在 state.links 里了，如果在这里 return 0，下面"发送失败下一轮重试"
+    // 的承诺就永远兑现不了 —— 最核心的那条告警（链接从满员变成可加入）会永久丢失。
+    // 实测复现过。
+    if (!hasUnsentAlert(state.discoveries[code])) return 0;
+  }
+
+  // ⚠️ 用户 /del 过的码（墓碑）不能再被发现扫描"复活"。
+  // 复活的后果是自相矛盾 + 静默失效：它会被写进 state.links，/links 说"监控中"、
+  // 消息还说"已自动加入监控列表"，但 monitorTargets 仍按墓碑把它排除 ——
+  // **永远不轮询**，状态再也不更新（用户以为在盯，其实没盯）。
+  if (state.removed && state.removed[code]) return 0;
 
   // ⚠️ 以前这里是「只要在 discoveries 里就 return 0」，后果很严重：
   // **首次发现时是满员/已关闭的码，之后变成可加入也永远不会再被探测** ——
@@ -1656,9 +1733,17 @@ export async function registerDiscovery({ cfg, state, notifier, log = () => {}, 
   // 现在：只有**已经知道它是 open** 的才跳过；已知但不是 open 的，**每轮重新探一次**，
   // 状态一变就提醒。代价是每轮多几个请求，换来的是不漏报。
   const prev = state.discoveries[code];
-  // ⚠️ 这里也要放行"上一轮该发但没发出去"的（notified === false），
-  // 否则它会先被"已经知道是 open 了"挡掉，重试永远发生不了。
-  if (prev && prev.state === "open" && prev.notified !== false) return 0;
+  // ⚠️ 这里也要放行"上一轮该发但没发出去"的，否则它会先被"已经知道是 open 了"挡掉，
+  // 重试永远发生不了。
+  if (prev && prev.state === "open" && !hasUnsentAlert(prev)) {
+    // ⚠️ 顺手刷新"最近一次见到它"的时间。discoveries 是按 foundAt 裁到 60 条的，
+    // 而已知 open 的码会一直走这个分支、foundAt 永远停在首次发现那一刻 ——
+    // 攒够 60 条别的记录后它会被裁掉，下一轮又被当成「🆕 发现新的 TF 链接」重报一遍
+    // （实测复现：第 61 条新记录一进来，这个老码就重报了）。
+    // 刷新后裁剪窗口 =「最近见到的 60 条」，而不是「最近变更过的 60 条」。
+    prev.foundAt = nowStamp();
+    return 0;
+  }
 
   const info = await probeJoin(code, { fetchImpl });
   const prevState = prev ? prev.state : null;
@@ -1667,8 +1752,8 @@ export async function registerDiscovery({ cfg, state, notifier, log = () => {}, 
   item.appName = item.appName || info.appName || info.title || "";
 
   // 状态没变的复探：只刷新时间，**不发消息**（否则同一码每轮都会被"发现"一次，变成噪音）。
-  // 例外：上一轮"该发但没发出去"（notified === false）要继续重试。
-  if (prev && prevState === info.state && prev.notified !== false) {
+  // 例外：上一轮"该发但没发出去"（有待发告警）要继续重试。
+  if (prev && prevState === info.state && !hasUnsentAlert(prev)) {
     prev.foundAt = item.foundAt;
     prev.lastChecked = info.checkedAt;
     prev.context = item.context || prev.context;
@@ -1706,10 +1791,14 @@ export async function registerDiscovery({ cfg, state, notifier, log = () => {}, 
     // 同一个 App 的**别的**链接如果已经标记过「已加入」，这条新链接也一并静音。
     // 否则用户会开始收到这条新链接的"满员 ↔ 又能进"来回 ——
     // 而他要的信息（"有新链接了"）上面那条提醒已经给过了。
+    //
+    // ⚠️ 身份判断用 sameAppName()，**不用 includes**：`"番茄小说".includes("番茄")` 会成立，
+    // 于是"用户 joined 了「番茄」"会把**另一个** App（"番茄小说 - 热门短剧"）的新链接
+    // 也一并静音 —— 而按本项目自己的规则，这两个名字不是同一个 App。
+    // （includes 做身份判断已经咬过两次，这是第三处，统一收敛到 sameAppName。）
     const siblingJoined = Object.values(state.links || {}).some((r) =>
-      r !== rec && r.joined && r.label && item.appName &&
-      (String(r.label).trim().toLowerCase() === String(item.appName).trim().toLowerCase() ||
-       String(item.appName).toLowerCase().includes(String(r.label).trim().toLowerCase())));
+      r !== rec && r.joined && item.appName &&
+      (sameAppName(r.label, item.appName) || sameAppName(r.appName, item.appName)));
     if (siblingJoined) { rec.joined = true; rec.joinedInherited = true; }
   }
   if (byWish) {
@@ -1719,8 +1808,10 @@ export async function registerDiscovery({ cfg, state, notifier, log = () => {}, 
     log(`  命中 App 级监控「${wr.label}」→ ${code}（${STATE_LABEL[info.state] || info.state}）`);
   }
 
+  // 这一轮若是"上一轮该发没发出去"的重发，标题别写"状态变了"（状态其实没变）
+  const retryUnsent = hasUnsentAlert(prev);
   const msg = [
-    prevState ? "<b>🔄 之前发现的链接状态变了</b>" : "<b>🆕 发现新的 TF 链接</b>",
+    (prevState && !retryUnsent) ? "<b>🔄 之前发现的链接状态变了</b>" : "<b>🆕 发现新的 TF 链接</b>",
     `join 码：<code>${esc(code)}</code>`,
     `链接：${esc(info.url)}`,
     `当前状态：<b>${STATE_LABEL[info.state] || info.state}</b>`,
@@ -1740,13 +1831,34 @@ export async function registerDiscovery({ cfg, state, notifier, log = () => {}, 
 
   // ⚠️ 记账要放在**发送成功之后**：以前先写 discoveries 再发，一旦发送失败
   // （Telegram 429/5xx/网络抖动），这条告警就永久丢了 —— 下一轮被去重门挡住，再也不会提。
-  // 记录：**不管发不发都记** —— /links 要看它，去重和"每轮复探"也靠它
-  item.notified = false;
+  // 记录：**不管发不发都记** —— /links 要看它，去重和"每轮复探"也靠它。
+  //
+  // ⚠️ `unsent` 是"有没有待发告警"的**唯一**判据（见 hasUnsentAlert）。
+  // 不值得打扰的记录**不能**标成未通知：它没有告警要发，标了就等于承诺一条永远不会来的重发，
+  // 而且会让这个码下次真的开放时被当成"重发"（标题写成「🆕 发现新的 TF 链接」）。
+  if (worthTelling) { item.notified = false; item.unsent = true; }
+  else { delete item.notified; item.unsent = false; }
   state.discoveries[code] = item;
-  // 裁剪：discoveries 只增不删的话 /links 迟早被 tgPrepare 静默截断（实测约 40-90 条就截）
+  // 裁剪：discoveries 只增不删的话 /links 迟早被 tgPrepare 静默截断（实测约 40-90 条就截）。
+  //
+  // ⚠️ 淘汰顺序不能只看时间：已知 open 的码会一直走上面"跳过复探"那条路，它的 foundAt
+  // 虽然每次刷新，但同一轮里所有码的时间戳精度只到秒（nowStamp）—— 一旦窗口满了，
+  // 排序会退化成"按插入顺序"，**最早发现的那个 open 码第一个被淘汰**，下一轮它又被当成
+  // 「🆕 发现新的 TF 链接」重报一遍（实测复现：窗口一满就开始 churn，每轮重报一条）。
+  // 所以按"淘汰代价"排：先淘汰已知非 open 的（淘汰它无害 —— 下次扫到会重新记下，
+  // 而"满员→可加入"那条告警本来就要等它变成 open 才发），带未发告警的最后淘汰。
   const keys = Object.keys(state.discoveries);
   if (keys.length > 60) {
-    keys.sort((a, b) => String(state.discoveries[a].foundAt || "").localeCompare(String(state.discoveries[b].foundAt || "")));
+    const rank = (k) => {
+      const r = state.discoveries[k];
+      if (hasUnsentAlert(r)) return 2;                  // 有待发告警：最后淘汰
+      return r && r.state === "open" ? 1 : 0;           // 已知 open：其次；其余先淘汰
+    };
+    keys.sort((a, b) => {
+      const ra = rank(a), rb = rank(b);
+      if (ra !== rb) return ra - rb;
+      return String(state.discoveries[a].foundAt || "").localeCompare(String(state.discoveries[b].foundAt || ""));
+    });
     for (const k of keys.slice(0, keys.length - 60)) delete state.discoveries[k];
   }
 
@@ -1758,9 +1870,10 @@ export async function registerDiscovery({ cfg, state, notifier, log = () => {}, 
   const sent = await notifier.send(msg.join("\n"));
   if (sent) {
     item.notified = true;
+    item.unsent = false;
     return 1;
   }
-  // 发送失败：notified 保持 false，下一轮不会被"状态没变"的短路挡掉，会重发
+  // 发送失败：unsent 保持 true，下一轮不会被"状态没变"的短路挡掉，会重发
   log(`  ⚠️ 发现告警发送失败，标记未通知，下一轮会重试（${code}）`);
   return 0;
 }
@@ -1905,9 +2018,14 @@ export function renderStatus(cfg, state) {
   for (const code of codes) {
     const rec = state.links[code];
     L.push("");
-    L.push(`· <b>${esc(rec.label || code)}</b> — ${STATE_LABEL[rec.state] || rec.state || "未检查"}`);
+    // ⚠️ 这里以前直接印 rec.state，而 App 级监控的 state 是创建时写死的 "waiting" ——
+    // 于是 /status 会出现「微信 — 等待可用链接 ⏳」紧跟着「已找到链接：7Jg9MM8h」
+    // 这种自相矛盾（老板截图过的 /apps 那条，只修了 /apps，这里漏了）。
+    // 现在两边都用同一个推导函数 appWatchState()。
+    const shown = appWatchState(rec, state);
+    L.push(`· <b>${esc(rec.label || code)}</b> — ${STATE_LABEL[shown] || shown || "未检查"}`);
     if (rec.kind === "app") {
-      const cs = (rec.codes || []).filter((c) => state.links[c]);   // 只算真的在监控的
+      const cs = liveWishCodes(rec, state);   // 只算真的在监控的
       L.push(cs.length
         ? `  已找到链接：${cs.map((c) => `<code>${esc(c)}</code>`).join("、")}`
         : "  还没有可用的公开链接（/scan 会按名字去找）");
@@ -1946,7 +2064,10 @@ export function renderLinks(state) {
   const L = ["<b>已知 join 码</b>"];
   for (const code of links.sort()) {
     const rec = state.links[code];
-    L.push(`· <code>${esc(code)}</code> ${esc(rec.label || "")}（监控中，${STATE_LABEL[rec.state] || rec.state || "未检查"}）`);
+    // App 级监控的 state 是创建时写死的 "waiting"，要按事实推导
+    // （和 /apps、/status 用同一个函数，别再各写一份）
+    const shown = appWatchState(rec, state);
+    L.push(`· <code>${esc(code)}</code> ${esc(rec.label || "")}（监控中，${STATE_LABEL[shown] || shown || "未检查"}）`);
   }
   if (disc.length) {
     L.push("", "<b>历史发现（未在监控）</b>");
@@ -1961,15 +2082,15 @@ export function renderLinks(state) {
 export const HELP = `<b>tg-tf-monitor 命令</b>
 
 <b>加 App</b>
-/add &lt;名字&gt; — 按名字**加进监控**。**现在有没有可用链接都能加**：
+/add &lt;名字&gt; — 按名字<b>加进监控</b>。<b>现在有没有可用链接都能加</b>：
     有链接就挂上盯着；还没有就记下这个 App，等出现了主动告诉你
     例：<code>/add 微信读书</code>
 /add &lt;TestFlight链接或join码&gt; — 手上有链接时直接用
 /add dep=&lt;id&gt; — 只有 departures 的 app id 时（会反解出 TF 码）
-    加的时候 App Store id、bundle id、departures.to id 会**自动补齐**
+    加的时候 App Store id、bundle id、departures.to id 会<b>自动补齐</b>
 /apps — 看监控中的 App 都盯了什么
 /del &lt;码&gt; — 移出监控
-/joined &lt;名字或码&gt; — 标记「我已经上车了」→ **之后不再提醒**它（状态照样更新）
+/joined &lt;名字或码&gt; — 标记「我已经上车了」→ <b>之后不再提醒</b>它（状态照样更新）
 /unjoined &lt;名字或码&gt; — 恢复提醒
     注意：标记「已加入」只压掉"同一条链接的状态来回"和版本更新；
     **发现这个 App 的新链接时仍然会告诉你**（那是真信息，不是噪音）
@@ -2061,7 +2182,9 @@ export async function handleCommand({ cfg, state, notifier, text, chatId, log = 
       `监控间隔：${esc(cfg.intervalMinutes)} 分钟`,
     ].join("\n"));
   } else if (cmd === "/add") {
-    mutated = true;
+    // ⚠️ mutated 不能在分支入口就置位：这条分支里有几个"什么都没干就返回"的出口
+    // （参数不全、dep 反解失败）—— 入口置位会让它们照样回写整份 state。
+    // 只在**真的改了 state** 的那两处置位（见下面的 App 级分支与主分支）。
     if (parts.length < 2) {
       await notifier.send("用法：<code>/add &lt;App名字&gt;</code>　或　<code>/add &lt;TestFlight链接/join码&gt;</code>\n" +
         "· 按名字加最省事：<code>/add 微信读书</code>（自己找链接、自己挑能进的那个）\n" +
@@ -2074,6 +2197,9 @@ export async function handleCommand({ cfg, state, notifier, text, chatId, log = 
     const arg = parts[1].trim();
     const depId = parseDeparturesArg(arg);
     let asCode = depId ? "" : firstJoinCode(arg);
+    // 裸 token 探测结果是 404 时，下面会走"按 App 名字加" —— 但要**说清楚**，
+    // 否则用户看到「已加入监控（App 级）：dTUO1uyt」会以为自己把那条链接加上了。
+    let bareTokenDead = false;
     if (!asCode && !depId && /^[A-Za-z0-9]{6,14}$/.test(arg)) {
       // ⚠️ 裸 token 有歧义：它可能真是 join 码，也可能是 6-14 位的英文 App 名
       // （Telegram / Spotify / WeChat / Alipay …）。以前直接当码处理，于是
@@ -2081,7 +2207,28 @@ export async function handleCommand({ cfg, state, notifier, text, chatId, log = 
       // 而用户想加的 App 根本没加上（回复还说"已加入监控"）。
       // 先探一下：真的是个 TestFlight 页面才当码，否则按名字走。
       const probe = await probeJoin(arg, { fetchImpl });
-      if (probe.state !== "invalid") asCode = arg;
+      if (probe.http === 200) {
+        asCode = arg;                 // 真取到了 TestFlight 页面 -> 它是 join 码
+      } else if (probe.state === "error") {
+        // ⚠️ 探测失败（超时/网络抖动）时**不能猜**。以前的判据是 `state !== "invalid"`，
+        // 于是"探测失败"也落进"当成 join 码"：`/add Telegram` 会建出一条
+        // https://testflight.apple.com/join/Telegram 的垃圾记录（状态永远"检查失败 ⚠️"、
+        // 每轮白请求一次），而用户真正想加的 App 根本没加上。
+        // 这里如实说清，并给两条明确出路。
+        await notifier.send([
+          `⚠️ 探测 <code>${esc(arg)}</code> 失败（${esc(probe.error || "网络异常")}）——` +
+            `没法确定它是 join 码还是 App 名字，所以这次<b>什么都没加</b>。`,
+          `· 确认它是 join 码：<code>/add https://testflight.apple.com/join/${esc(arg)}</code>`,
+          `· 确认它是 App 名字：稍后重发 <code>/add ${esc(arg)}</code>`,
+        ].join("\n"));
+        return;
+      }
+      // 404（state=invalid）：不是 TestFlight 页面 -> 按 App 名字走（下面那条分支）
+      // ⚠️ 但"长得像码、Apple 却 404"要单独说一句：不说的后果实测过 ——
+      // `/add dTUO1uyt`（码已失效/打错一个字母）会静默建出一条 App 级监控，
+      // 回复还是「✅ 已加入监控（App 级）：dTUO1uyt」，用户以为链接加上了，
+      // 而且这个名字还会被每轮 /scan 当关键词去搜。
+      else bareTokenDead = true;
     }
     const opts = {};
     let code = "";
@@ -2157,6 +2304,7 @@ export async function handleCommand({ cfg, state, notifier, text, chatId, log = 
         const existing = Object.entries(state.links).find(([, r]) =>
           r.kind === "app" && String(r.label || "").trim() === label.trim());
         const key = existing ? existing[0] : ("app:" + (bestIt && bestIt.trackId ? bestIt.trackId : label));
+        mutated = true;   // 从这里开始真的改 state 了
         const wr = (state.links[key] = state.links[key] || {});
         // ⚠️ 只在**这次查到了**才覆盖 id/bundle —— 否则 iTunes 一次 429 就会把
         // 上次查到的 appStoreId 抹成 undefined（JSON.stringify 会直接丢掉这个字段），
@@ -2182,10 +2330,15 @@ export async function handleCommand({ cfg, state, notifier, text, chatId, log = 
         await notifier.send([
           `✅ 已加入监控（App 级）：<b>${esc(label)}</b>`,
           bestIt ? `App Store：${esc(bestIt.trackId)}${bestIt.bundleId ? "（" + esc(bestIt.bundleId) + "）" : ""}` : "",
+          // ⚠️ 长得像 join 码、Apple 却 404：必须说清楚，否则用户以为链接加上了
+          bareTokenDead
+            ? `⚠️ <i>「${esc(name)}」看着像个 join 码，但 Apple 那边 404（链接已失效或拼错了）——` +
+              `这次是按 <b>App 名字</b>记下的。要加的是链接就核对后重发。</i>`
+            : "",
           "",
-          "现在**还没有名字对得上的公开 TF 链接** —— 但我记住了这个 App：",
+          "现在<b>还没有名字对得上的公开 TF 链接</b> —— 但我记住了这个 App：",
           "· 每轮 <code>/scan</code> 会按它的名字去 tfstore / departures / 搜索引擎找",
-          "· **一旦出现能加入的链接，我会主动告诉你**",
+          "· <b>一旦出现能加入的链接，我会主动告诉你</b>",
           "· 也可以随时 <code>/find " + esc(name.slice(0, 20)) + "</code> 手动查一次",
           (bestIt && itScore < 3) ? `<i>App Store 匹配到的是：${esc(appStoreName)}（近似名匹配，不确定就核对一下）</i>` : "",
           // 名字里含关键词的其它 App —— 用户可能其实想加那些，所以附上可直接点的命令
@@ -2196,7 +2349,11 @@ export async function handleCommand({ cfg, state, notifier, text, chatId, log = 
               g.items.slice(0, 3).map((x) => `<code>/add ${esc(x.code)}</code>`).join("　") + `</i>`),
           ].join("\n") : "",
         ].filter(Boolean).join("\n"));
-        return;
+        // ⚠️ 这里必须是 `return { mutated }`，不能是裸 `return;` ——
+        // 裸 return 返回 undefined，handleUpdate 的 `if (res && res.mutated)` 就不落盘，
+        // 于是"已加入监控（App 级）"这句回复是**假的**：这一条 App 级监控请求一结束就没了。
+        // （实测：走 handleUpdate 时 KV 一次都没写；这条分支是 2026-10-14 引入 mutated 时漏掉的。）
+        return { mutated };
       }
       const g = exactGroups[0];
 
@@ -2216,16 +2373,32 @@ export async function handleCommand({ cfg, state, notifier, text, chatId, log = 
     await notifier.send(`正在补齐 <code>${esc(code)}</code> 的信息（探测链接 + 查 App Store + 查 departures.to）…`);
 
     const e = await enrichApp({ code, name: givenName, fetchImpl, log });
+    mutated = true;   // 从这里开始真的改 state 了
     const rec = (state.links[code] = state.links[code] || {});
     if (state.removed && state.removed[code]) delete state.removed[code];   // 重新加 -> 撤销墓碑
+    // ⚠️ 探测失败（超时/429/5xx）时 e.state 是 "error"、e.desc/e.descHash 是空串 ——
+    // **不能拿它覆盖已有记录**：否则下一轮 runMonitor 会推一条假的
+    // 「检查失败 ⚠️ → 可加入 ✅」，而且 desc 基线被清空后，页面说明的真实变化会被
+    // 当成新基线静默吞掉（runMonitor 里专门为这件事写过不变式，这里是漏掉的一处）。
+    // 这条路真实可达：/apps 在缺绑定时会主动建议用户"重新 /add 一次可自动补"。
+    //
+    // ⚠️ 而且**连新建记录也不能写 "error"**：新建时 rec.state 是空的，照抄 e.state 就等于
+    // 先给它安一个"检查失败"的旧状态，下一轮成功探测时同样会推那条假的
+    // 「检查失败 ⚠️ → 可加入 ✅」（实测复现：/add <链接> 时网络抖动 → 下一轮假告警）。
+    // 留空 = "未检查"，下一轮的成功探测就是**首次检查**（可加入时按设计不打扰）。
+    const failed = e.state === "error";
     Object.assign(rec, {
-      label: givenName || e.appName || code,
+      label: givenName || e.appName || rec.label || code,
       appName: e.appName || rec.appName || "",
       firstSeen: rec.firstSeen || nowStamp(),
       sources: [...new Set([...(rec.sources || []), "manual"])],
-      state: e.state, url: e.url, desc: e.desc, descHash: e.descHash, lastChecked: e.checkedAt,
+      url: e.url || rec.url,
+      desc: failed ? (rec.desc || "") : e.desc,
+      descHash: failed ? (rec.descHash || "") : e.descHash,
+      lastChecked: e.checkedAt,
       keywords: e.keywords || [],
     });
+    if (!failed) rec.state = e.state;   // 失败：保留旧状态；从来没有过就继续留空（= 未检查）
     if (opts.appstore) { rec.appStoreId = /^\d+$/.test(opts.appstore) ? Number(opts.appstore) : opts.appstore; rec.appStoreSource = "manual"; }
     else if (e.appStoreId) { rec.appStoreId = e.appStoreId; rec.appStoreSource = "auto"; }
     if (opts.bundle) rec.bundleId = opts.bundle;
@@ -2233,7 +2406,8 @@ export async function handleCommand({ cfg, state, notifier, text, chatId, log = 
     if (opts.departures) { rec.departuresId = /^\d+$/.test(opts.departures) ? Number(opts.departures) : opts.departures; rec.departuresSource = "manual"; }
     else if (derivedDepartures) { rec.departuresId = /^\d+$/.test(derivedDepartures) ? Number(derivedDepartures) : derivedDepartures; rec.departuresSource = "auto"; }
     else if (e.departuresId) { rec.departuresId = e.departuresId; rec.departuresSource = "auto"; }
-    if (!rec.stateSince) rec.stateSince = nowStamp();
+    // stateSince 只在**真的有状态**时才记：留空状态的记录写"状态已保持 X"是自相矛盾
+    if (rec.state && !rec.stateSince) rec.stateSince = nowStamp();
 
     const L = [
       `✅ 已加入监控：<b>${esc(rec.label)}</b> — ${STATE_LABEL[e.state] || e.state}`,
@@ -2262,11 +2436,13 @@ export async function handleCommand({ cfg, state, notifier, text, chatId, log = 
     await notifier.send(`正在搜「${esc(parts.slice(1).join(" "))}」…`);
     await notifier.send(await findApp({ state, query: parts.slice(1).join(" "), fetchImpl, log }));
   } else if (cmd === "/joined" || cmd === "/done" || cmd === "/unjoined") {
-    mutated = true;
+    // mutated 只在真的改了 state 之后置位（见下面 for 之前）——
+    // 这条分支有几个"没匹配到 / 匹配到多条让你说具体点"的出口，
+    // 它们什么都没改，不该回写整份 state。
     const undo = cmd === "/unjoined";
     if (parts.length < 2) {
       await notifier.send(`用法：<code>${cmd} &lt;App名字 或 join码&gt;</code>\n` +
-        (undo ? "恢复提醒。" : "标记「我已经上车了」→ 之后**不再提醒**这个 App 的链接状态变化（状态照样更新）。") +
+        (undo ? "恢复提醒。" : "标记「我已经上车了」→ 之后<b>不再提醒</b>这个 App 的链接状态变化（状态照样更新）。") +
         "\n例：<code>" + cmd + " 番茄小说</code>");
       return;
     }
@@ -2281,25 +2457,38 @@ export async function handleCommand({ cfg, state, notifier, text, chatId, log = 
         hit.slice(0, 6).map(([k, r]) => `· ${esc(r.label || k)}　<code>${esc(k)}</code>`).join("\n"));
       return;
     }
+    mutated = true;
+    // ⚠️ 命中 App 级记录时，要**连带它现在盯着的那些码一起**标记。
+    // 原因：状态告警挂在**码**上（runMonitor 只看 monitorTargets，也就是码），
+    // 只把 App 级记录标成 joined 等于没静音 —— 用户被告知"之后不再提醒"，
+    // 然后照样收到这条链接的"满员 ↔ 又能进"（实测复现：/joined 微信读书 之后满员仍然告警）。
+    const targets = [...hit];
     for (const [, r] of hit) {
+      if (!r || r.kind !== "app") continue;
+      for (const c of liveWishCodes(r, state)) {
+        if (!targets.some(([k]) => k === c)) targets.push([c, state.links[c]]);
+      }
+    }
+    for (const [, r] of targets) {
       if (undo) { delete r.joined; delete r.joinedAt; }
       else { r.joined = true; r.joinedAt = nowStamp(); }
     }
+    const names = [...new Set(targets.map(([, r]) => r.label || "?"))].map((x) => esc(x)).join("、");
     await notifier.send(undo
-      ? `🔔 已恢复提醒：${hit.map(([, r]) => esc(r.label || "?")).join("、")}`
-      : `🔕 已标记「已加入」：${hit.map(([, r]) => esc(r.label || "?")).join("、")}\n` +
+      ? `🔔 已恢复提醒：${names}`
+      : `🔕 已标记「已加入」：${names}\n` +
         `<i>之后这个 App 的链接状态变化不再提醒你（状态照样更新）。想恢复发 <code>/unjoined ${esc(arg.slice(0, 20))}</code></i>`);
   } else if (cmd === "/del" && parts.length < 2) {
     await notifier.send("用法：<code>/del &lt;join 码 或 App名字&gt;</code>\n例：<code>/del dTUO1uyt</code> 或 <code>/del 微信读书</code>");
   } else if (cmd === "/del") {
-    mutated = true;
-    let code = parts[1].trim().replace(/^\//, "");
-    code = firstJoinCode(code) || code;
+    // mutated 只在**真的删掉了**那一支置位：/del 打错字（没匹配到）或匹配到多条时
+    // 什么都没改，不该回写整份 state（那会覆盖并发期间 cron 写下的更新）。
     const hit = findWatchEntries(state, parts.slice(1).join(" ").trim());
     if (hit.length > 1) {
       await notifier.send(`「${esc(parts.slice(1).join(" "))}」匹配到 ${hit.length} 条 —— 说具体点或用 join 码：\n` +
         hit.slice(0, 6).map(([k, r]) => `· ${esc(r.label || k)}　<code>${esc(k)}</code>`).join("\n"));
     } else if (hit.length === 1) {
+      mutated = true;
       const k = hit[0][0];
       delete state.links[k];
       // 从各 App 级监控的 codes 里摘掉，否则 /apps 会一直挂着一个"已找到但没在监控"的幽灵码

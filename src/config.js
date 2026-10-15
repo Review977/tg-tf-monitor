@@ -84,7 +84,13 @@ export function loadConfig(env = {}) {
   if (env.TG_API_BASE) cfg.telegram.apiBase = String(env.TG_API_BASE);
 
   // 显示时区（可选；默认已在 DEFAULT_CONFIG 里给了 Asia/Shanghai）
-  if (env.TIMEZONE) cfg.timezone = String(env.TIMEZONE);
+  if (env.TIMEZONE) {
+    cfg.timezone = String(env.TIMEZONE);
+    // ⚠️ core.js 里 "UTC" 被刻意当成"没有时区名"、走**固定偏移**那条路（有测试钉着）。
+    // 而固定偏移的默认值是 480 —— 于是 `TIMEZONE=UTC` 会静默显示成 UTC+8（北京时间），
+    // 用户配了 UTC 却看到 +8，而且看不出来为什么。这里把偏移一起摆正。
+    if (/^(utc|gmt|z|etc\/utc|etc\/gmt)$/i.test(cfg.timezone.trim())) cfg.utcOffsetMinutes = 0;
+  }
   if (env.UTC_OFFSET_MINUTES !== undefined && String(env.UTC_OFFSET_MINUTES) !== "") {
     const n = Number(env.UTC_OFFSET_MINUTES);
     if (Number.isFinite(n)) cfg.utcOffsetMinutes = n;
