@@ -11,5 +11,12 @@ node_modules/
 .wrangler/
 .vercel/
 
-# 注意：dist/worker.js **要**入库 —— 老板机器上没装 Node，
-# 他是把这个文件粘进 Cloudflare 控制台的，必须随仓库提供。
+# 注意：dist/worker.js **要**入库，但**不是**因为"部署要用它"。
+#
+# 线上这个 Worker 走的是 A-2「导入仓库」：仓库连着 Cloudflare Workers Builds，
+# **推 main 就自动重新构建并部署**（wrangler.jsonc 的 `main` 指向 src/worker.js，
+# 由 wrangler 自己打包），部署路径不经过 dist/。证据：每次 push 后 GitHub 上都会出现
+# `Workers Builds: tg-tf-monitor` 的 check（success），详情指向 CF 的 production 构建页。
+#
+# 留这个文件是为了**另外两条路**：A-3「手工粘贴」（把整个文件贴进 CF 编辑器）和
+# 任何没装 Node 的人。改 src 之后记得 `node build.mjs` 重新生成它，别让它过期。
