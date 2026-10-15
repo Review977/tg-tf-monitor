@@ -57,6 +57,11 @@ export async function doRun(env = {}, opts = {}) {
 
   const store = pickStorage(env);
   const state = await store.load();
+  // ⚠️ 本轮开始时的快照。落盘时用它做三方合并（见 storage.js 的 mergeStates）：
+  // 定时任务要跑好几秒网络，期间老板发 /joined、/add、/del 都会被写进存储 ——
+  // 不合并的话，这轮结束时把整份旧快照写回去，那几笔就没了
+  // （实测：/joined 后 joined=true，cron 落盘后变回 undefined，他被告知"不再提醒"却继续收到提醒）。
+  const base = JSON.parse(JSON.stringify(state));
   const notifier = makeNotifier({ cfg, log, dryRun: dry, fetchImpl });
 
   log(`存储=${store.kind} 模式=${mode}`);
@@ -67,7 +72,7 @@ export async function doRun(env = {}, opts = {}) {
   if (mode === "discovery" || mode === "all") {
     events += await runDiscovery({ cfg, state, notifier, log, fetchImpl, onlySource: opts.onlySource });
   }
-  await store.save(state);
+  await store.save(state, { base });
   log(`完成，共 ${events} 条事件。`);
   return { events, storage: store.kind, mode };
 }
@@ -123,6 +128,8 @@ export async function handleUpdate(env = {}, update, opts = {}) {
 
     const store = pickStorage(env);
     const state = await store.load();
+    // 和 doRun 同理：/check、/scan 也能跑好几秒，期间的并发写入不能被整份覆盖
+    const base = JSON.parse(JSON.stringify(state));
     const notifier = makeNotifier({ cfg, log, fetchImpl });
     const res = await handleCommand({
       cfg, state, notifier, text,
@@ -139,7 +146,8 @@ export async function handleUpdate(env = {}, update, opts = {}) {
     });
     // 只有真的改了 state 才落盘（见 handleCommand 里 mutated 的说明）——
     // 只读命令写回整份 state 会把并发期间别人的更新整份覆盖掉。
-    if (res && res.mutated) await store.save(state);
+    // 写盘时带上 base 做三方合并：只盖本轮真改过的字段。
+    if (res && res.mutated) await store.save(state, { base });
     else log("命令未改动状态，跳过写盘");
     return { ok: true };
   } catch (e) {

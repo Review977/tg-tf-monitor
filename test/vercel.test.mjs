@@ -551,3 +551,68 @@ test("⭐ 回归：?key 重复出现（数组）时不能 500", async () => {
     assert.equal(res.statusCode, 403, "应该是 403 而不是 500：" + JSON.stringify(res.body));
   });
 });
+
+// ───────── 并发写入：三方合并（定时任务 vs 命令）─────────
+
+test("⭐ 回归：mergeStates 只盖本轮改过的字段，别人窗口期里的写入不能被抹掉", async () => {
+  const { mergeStates } = await import("../src/storage.js");
+  const base = { links: { A: { state: "full", label: "某App" } }, meta: { lastCheck: "t0" } };
+  const next = { links: { A: { state: "open", label: "某App" } }, meta: { lastCheck: "t1" } };
+  const cur = { links: { A: { state: "full", label: "某App", joined: true }, B: { state: "open" } }, meta: { lastCheck: "t0", lastScan: "t9" } };
+  const m = mergeStates(cur, next, base);
+  assert.equal(m.links.A.state, "open", "本轮改过的 state 用本轮的值");
+  assert.equal(m.links.A.joined, true, "别人窗口期加的 joined 必须留住（否则『不再提醒』是假的）");
+  assert.ok(m.links.B, "别人新增的链接要留住");
+  assert.equal(m.meta.lastScan, "t9", "别人改的别的字段要留住");
+  assert.equal(m.meta.lastCheck, "t1", "本轮改的字段用本轮的值");
+});
+
+test("⭐ 回归：mergeStates 尊重删除（本轮 /del 的、别人 /del 的都不复活）", async () => {
+  const { mergeStates } = await import("../src/storage.js");
+  const m1 = mergeStates({ links: { A: { state: "full" } } }, { links: { A: { state: "full" } } }, { links: { A: { state: "full" }, B: { state: "full" } } });
+  assert.deepEqual(Object.keys(m1.links), ["A"], "本轮删掉的不能复活");
+  const m2 = mergeStates({ links: {} }, { links: { A: { state: "full" } } }, { links: { A: { state: "full" } } });
+  assert.deepEqual(Object.keys(m2.links), [], "别人删掉的不能复活");
+  // 数组整体当原子：本轮没改就保留别人的
+  const m3 = mergeStates({ links: { A: { sources: ["manual", "config"] } } }, { links: { A: { sources: ["manual"] } } }, { links: { A: { sources: ["manual"] } } });
+  assert.deepEqual(m3.links.A.sources, ["manual", "config"]);
+});
+
+test("⭐ 回归：cron 跑一轮期间的 /joined 不能被整份回写抹掉（实测复现过）", async () => {
+  const { doRun, handleUpdate } = await import("../src/runner.js");
+  let stored = JSON.stringify({
+    links: { AAAA1111: { label: "某App", state: "full", sources: ["manual"], firstSeen: "2026-10-01T00:00:00Z" } },
+    discoveries: {}, appstore: {}, meta: {},
+  });
+  const KV = {
+    async get(_k, type) { const v = JSON.parse(stored); return type === "json" ? v : stored; },
+    async put(_k, v) { stored = v; },
+  };
+  const env = {
+    STATE: KV, TG_TOKEN: "1:FAKE", TG_CHAT_ID: "555", ADMIN_KEY: "K",
+    CONFIG_JSON: JSON.stringify({
+      watch: [{ code: "AAAA1111", label: "某App" }], keywords: [],
+      discovery: { useDepartures: false, departuresApps: [], tfstoreQueries: [], webQueries: [], telegramChannels: [] },
+    }),
+  };
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const slow = async (u) => {
+    const s = String(u);
+    if (s.includes("testflight.apple.com/join/")) {
+      await sleep(400);
+      return new Response(load("open_zh.html"), { status: 200, headers: { "content-type": "text/html" } });
+    }
+    if (s.includes("api.telegram.org")) {
+      return new Response(JSON.stringify({ ok: true, result: { message_id: 1 } }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    return new Response("", { status: 404 });
+  };
+  const cron = doRun(env, { mode: "monitor", log: () => {}, fetchImpl: slow });
+  await sleep(120);   // cron 已经读完 state、正在跑网络
+  await handleUpdate(env, { message: { chat: { id: "555" }, text: "/joined AAAA1111" } }, { log: () => {}, fetchImpl: slow });
+  assert.equal(JSON.parse(stored).links.AAAA1111.joined, true, "命令这一笔要先落盘");
+  await cron;
+  const after = JSON.parse(stored).links.AAAA1111;
+  assert.equal(after.joined, true, "cron 落盘后 joined 不能被抹掉（否则用户被告知『不再提醒』却继续收到提醒）");
+  assert.equal(after.state, "open", "cron 这一轮查到的状态也要写进去");
+});

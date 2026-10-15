@@ -11,7 +11,7 @@
  * 用法：整个文件贴进 Cloudflare 控制台的 Worker 编辑器即可。
  * 该产物已被 test/handler.test.mjs 实际 import 并跑过断言。
  *
- * 源码指纹（sha256 前 16 位）：70a822e5b9e95a8e
+ * 源码指纹（sha256 前 16 位）：48897536dd9c6eaa
  * ⚠️ 这里刻意**不放构建时间** —— 放了构建就不可复现，
  *    CI 里"产物必须与源码同步"那条检查会永远失败（这是被 CI 抓出来的）。
  */
@@ -2671,29 +2671,89 @@ function checkConfig(cfg, { requireTelegram = true } = {}) {
  * 状态存储适配器
  *
  * serverless 没有本地文件系统，状态必须放外部。两个平台各一个实现，
- * 接口统一为 `{ load(), save(state) }`：
+ * 接口统一为 `{ load(), save(state, { base }) }`：
  *   · Cloudflare：Workers KV（绑定名 STATE）—— 平台自带，不需要额外注册服务
  *   · Vercel：Upstash Redis REST（Vercel 函数无状态，必须外接）
  *   · 内存：只给单测/一次性试跑用，**不会持久化**
  *
  * 状态体积很小（几个链接 + 历史发现，约 2-5KB），KV 免费额度绰绰有余。
+ *
+ * ⚠️ `base`（调用方 load 出来的那份快照）是**必须**的：不传就是"整份覆盖"，
+ * 而 serverless 里两个入口随时并发 —— 定时任务跑一轮要好几秒网络，
+ * 期间老板发一条 `/joined`，那一笔写入就会被定时任务的旧快照整份抹掉
+ * （实测复现：`/joined` 后 joined=true，cron 落盘后变回 undefined ——
+ * 他被告知"之后不再提醒"，却继续收到提醒）。传了 base 就走三方合并：
+ * 只把**本轮真的改过**的字段盖上去，别的写入保留。
  */
 
 
 
 const KEY = "state";
 
+function isPlainObject(v) {
+  return !!v && typeof v === "object" && !Array.isArray(v);
+}
+
+/** 深比较（数组按整体比，不做元素级合并） */
+function deepEqual(a, b) {
+  if (a === b) return true;
+  if (Array.isArray(a) || Array.isArray(b)) {
+    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+    return a.every((x, i) => deepEqual(x, b[i]));
+  }
+  if (!isPlainObject(a) || !isPlainObject(b)) return false;
+  const ka = Object.keys(a);
+  if (ka.length !== Object.keys(b).length) return false;
+  return ka.every((k) => Object.prototype.hasOwnProperty.call(b, k) && deepEqual(a[k], b[k]));
+}
+
+/**
+ * 三方合并：`cur` = 存储里现在的（别人可能刚改过），`next` = 本轮算出来的，`base` = 本轮开始时读到的。
+ *
+ * 规则（按字段，数组整体当原子）：
+ *   · 本轮改过（`next[k]` 与 `base[k]` 不同）→ 用 `next[k]`（含本轮新增/删除）
+ *   · 本轮没改 → 保留 `cur[k]`（也就是别人在窗口期里的写入）
+ *   · 两边都是普通对象 → 递归下去，这样"同一条记录的不同字段分别被两边改"也不会丢
+ *   · 本轮删掉的键 → 合并结果里也不留（尊重删除）
+ */
+function mergeStates(cur, next, base) {
+  if (!isPlainObject(cur) || !isPlainObject(next)) return next;
+  const b = isPlainObject(base) ? base : {};
+  const out = {};
+  const keys = new Set([...Object.keys(cur), ...Object.keys(next)]);
+  for (const k of keys) {
+    const inNext = Object.prototype.hasOwnProperty.call(next, k);
+    const inBase = Object.prototype.hasOwnProperty.call(b, k);
+    if (!inNext) {
+      // 本轮没有这个键：base 里也没有 -> 是别人新加的，保留；base 里有 -> 是本轮删的，尊重删除
+      if (!inBase) out[k] = cur[k];
+      continue;
+    }
+    if (inBase && deepEqual(next[k], b[k])) {
+      // 本轮没动这个字段 -> 别人改过的赢（别人删了就不复活）
+      if (Object.prototype.hasOwnProperty.call(cur, k)) out[k] = cur[k];
+      continue;
+    }
+    if (isPlainObject(next[k]) && isPlainObject(cur[k])) {
+      out[k] = mergeStates(cur[k], next[k], b[k]);
+      continue;
+    }
+    out[k] = next[k];
+  }
+  return out;
+}
+
 /** Cloudflare Workers KV */
 function kvStorage(kv) {
   if (!kv) throw new Error("缺少 KV 绑定：请在 wrangler.jsonc / 控制台绑定 KV 命名空间到 STATE");
+  const load = async () => normalizeState(await kv.get(KEY, "json"));
   return {
     kind: "cloudflare-kv",
-    async load() {
-      const v = await kv.get(KEY, "json");
-      return normalizeState(v);
-    },
-    async save(state) {
-      await kv.put(KEY, JSON.stringify(state));
+    load,
+    async save(state, { base } = {}) {
+      // base 缺失（旧调用方 / 测试桩）时退回整份覆盖，行为和以前一致
+      const out = base === undefined ? state : mergeStates(await load(), state, base);
+      await kv.put(KEY, JSON.stringify(out));
     },
   };
 }
@@ -2722,31 +2782,33 @@ async function upstashJson(res, what) {
  */
 function redisStorage({ url, token, fetchImpl }) {
   const f = fetchImpl || fetch;
-  const base = String(url || "").replace(/\/+$/, "");
+  const root = String(url || "").replace(/\/+$/, "");
   const auth = { Authorization: `Bearer ${token}` };
-  if (!base || !token) {
+  if (!root || !token) {
     throw new Error("缺少 Upstash 配置：需要 UPSTASH_REDIS_REST_URL 与 UPSTASH_REDIS_REST_TOKEN");
   }
+  const load = async () => {
+    const res = await f(`${root}/get/${KEY}`, { headers: auth });
+    const json = await upstashJson(res, "读取");
+    if (json.error) throw new Error("Upstash 读取失败: " + json.error);
+    const raw = json.result;
+    if (!raw) return normalizeState(null);
+    try {
+      return normalizeState(JSON.parse(raw));
+    } catch {
+      // 存的东西坏了：当成空状态重新开始，而不是整个崩掉
+      return normalizeState(null);
+    }
+  };
   return {
     kind: "upstash-redis",
-    async load() {
-      const res = await f(`${base}/get/${KEY}`, { headers: auth });
-      const json = await upstashJson(res, "读取");
-      if (json.error) throw new Error("Upstash 读取失败: " + json.error);
-      const raw = json.result;
-      if (!raw) return normalizeState(null);
-      try {
-        return normalizeState(JSON.parse(raw));
-      } catch {
-        // 存的东西坏了：当成空状态重新开始，而不是整个崩掉
-        return normalizeState(null);
-      }
-    },
-    async save(state) {
-      const res = await f(`${base}/set/${KEY}`, {
+    load,
+    async save(state, { base } = {}) {
+      const out = base === undefined ? state : mergeStates(await load(), state, base);
+      const res = await f(`${root}/set/${KEY}`, {
         method: "POST",
         headers: { ...auth, "content-type": "text/plain" },
-        body: JSON.stringify(state),
+        body: JSON.stringify(out),
       });
       const json = await upstashJson(res, "写入");
       if (json.error) throw new Error("Upstash 写入失败: " + json.error);
@@ -2853,6 +2915,11 @@ async function doRun(env = {}, opts = {}) {
 
   const store = pickStorage(env);
   const state = await store.load();
+  // ⚠️ 本轮开始时的快照。落盘时用它做三方合并（见 storage.js 的 mergeStates）：
+  // 定时任务要跑好几秒网络，期间老板发 /joined、/add、/del 都会被写进存储 ——
+  // 不合并的话，这轮结束时把整份旧快照写回去，那几笔就没了
+  // （实测：/joined 后 joined=true，cron 落盘后变回 undefined，他被告知"不再提醒"却继续收到提醒）。
+  const base = JSON.parse(JSON.stringify(state));
   const notifier = makeNotifier({ cfg, log, dryRun: dry, fetchImpl });
 
   log(`存储=${store.kind} 模式=${mode}`);
@@ -2863,7 +2930,7 @@ async function doRun(env = {}, opts = {}) {
   if (mode === "discovery" || mode === "all") {
     events += await runDiscovery({ cfg, state, notifier, log, fetchImpl, onlySource: opts.onlySource });
   }
-  await store.save(state);
+  await store.save(state, { base });
   log(`完成，共 ${events} 条事件。`);
   return { events, storage: store.kind, mode };
 }
@@ -2919,6 +2986,8 @@ async function handleUpdate(env = {}, update, opts = {}) {
 
     const store = pickStorage(env);
     const state = await store.load();
+    // 和 doRun 同理：/check、/scan 也能跑好几秒，期间的并发写入不能被整份覆盖
+    const base = JSON.parse(JSON.stringify(state));
     const notifier = makeNotifier({ cfg, log, fetchImpl });
     const res = await handleCommand({
       cfg, state, notifier, text,
@@ -2935,7 +3004,8 @@ async function handleUpdate(env = {}, update, opts = {}) {
     });
     // 只有真的改了 state 才落盘（见 handleCommand 里 mutated 的说明）——
     // 只读命令写回整份 state 会把并发期间别人的更新整份覆盖掉。
-    if (res && res.mutated) await store.save(state);
+    // 写盘时带上 base 做三方合并：只盖本轮真改过的字段。
+    if (res && res.mutated) await store.save(state, { base });
     else log("命令未改动状态，跳过写盘");
     return { ok: true };
   } catch (e) {
