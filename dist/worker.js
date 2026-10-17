@@ -11,7 +11,7 @@
  * 用法：整个文件贴进 Cloudflare 控制台的 Worker 编辑器即可。
  * 该产物已被 test/handler.test.mjs 实际 import 并跑过断言。
  *
- * 源码指纹（sha256 前 16 位）：48897536dd9c6eaa
+ * 源码指纹（sha256 前 16 位）：14acc337965e39b6
  * ⚠️ 这里刻意**不放构建时间** —— 放了构建就不可复现，
  *    CI 里"产物必须与源码同步"那条检查会永远失败（这是被 CI 抓出来的）。
  */
@@ -2551,8 +2551,12 @@ async function handleCommand({ cfg, state, notifier, text, chatId, log = () => {
 /**
  * 配置装载
  *
+ * 这是个**通用**的 TF 公测链接监控机器人：任何 App 都能盯，加 App 也不用改代码
+ * （在 TG 里 `/add <名字>`，或直接改下面 DEFAULT_CONFIG 的 watch/keywords）。
+ * 内置默认值只是"开箱即用的一套默认"——**默认盯番茄小说**，不是只能盯番茄。
+ *
  * 优先级（后面的覆盖前面的）：
- *   1. 内置默认值（就是番茄小说那套，开箱即用）
+ *   1. 内置默认值（默认盯番茄小说，开箱即用）
  *   2. 环境变量 CONFIG_JSON —— 想改监控对象/发现源时用
  *   3. 平台 secret（TG_TOKEN / TG_CHAT_ID / TG_API_BASE）—— **最后覆盖**，
  *      这样 CONFIG_JSON 里就算写了空 token 也不会把 secret 冲掉

@@ -1,14 +1,23 @@
 # tg-tf-monitor
 
-监控 / 发现**番茄小说 TestFlight 公测链接**的 Telegram 机器人 —— **无服务器版**。
+盯 **TestFlight 公测链接**的 Telegram 机器人 —— **任何 App 都能加**，**无服务器版**。
 部署到 Cloudflare Workers 或 Vercel，不用自己开机器、不用一直挂着。
+内置默认盯的是**番茄小说**（开箱即用）；换成别的 App **不用改代码**，在 TG 里发 `/add <名字>` 就行。
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/Review977/tg-tf-monitor)
 [![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2FReview977%2Ftg-tf-monitor&env=TG_TOKEN,TG_CHAT_ID,TG_WEBHOOK_SECRET,ADMIN_KEY,UPSTASH_REDIS_REST_URL,UPSTASH_REDIS_REST_TOKEN&envDescription=TG_TOKEN%20%E4%BB%8E%20%40BotFather%20%E6%8B%BF%EF%BC%9BTG_CHAT_ID%20%E7%94%A8%20%2Fchat-id%20%E7%AB%AF%E7%82%B9%E6%9F%A5%EF%BC%9B%E4%B8%A4%E4%B8%AA%E9%9A%8F%E6%9C%BA%E4%B8%B2%E7%94%A8%20openssl%20rand%20-hex%2024%20%E7%94%9F%E6%88%90%EF%BC%9BUpstash%20%E4%B8%A4%E9%A1%B9%E4%BB%85%20Vercel%20%E9%9C%80%E8%A6%81&project-name=tg-tf-monitor&repository-name=tg-tf-monitor)
 
-它干什么：盯着番茄小说的 TestFlight 公测链接，**链接失效 / 名额满了 / 开发者换了新链接**
-就推 TG；顺便从 departures.to、tfstore、搜索引擎、TG 频道里找**新的 join 码**。
-还能**从 TG 里加新的 App**（`/find` `/add` `/apps`）。
+它干什么：
+
+- **盯链接状态** —— 名额满了 / 又能进了 / 链接失效 / 开发者换了新 join 码，都推 TG
+- **找新链接** —— 从 departures.to、tfstore、搜索引擎、TG 频道里搜新的 join 码，一出现就告诉你
+- **盯正式版** —— 绑了 App Store id 的 App，正式版发新版也提醒（TF 构建号 Apple 不公开，看不到）
+- **在 TG 里管 App** —— `/find` 查、`/add` 加（按名字加也行：当时没有链接也能先把这个 App 记下）、
+  `/apps` 看每个 App 都盯了什么、`/del` 移出
+- **静音** —— `/joined` 标记「我已上车」：不再提醒那条链接的状态来回，但这个 App **有新链接照样告诉你**
+
+> 它盯的是「**join 码 + App**」，不是「番茄小说」：默认配置、关键词、发现源都在 `src/config.js`
+> （或用 `CONFIG_JSON` 环境变量整体覆盖），见下面的「配置」一节。
 
 > 🚀 **第一次用请看 [SETUP.md](SETUP.md)** —— 从在 BotFather 建 bot 到跑起来，一共 5 步，
 > 含两个**不能反的操作顺序**（先拿 chat_id 再设 webhook；首次部署要填 ADMIN_KEY）。
@@ -599,7 +608,7 @@ node cli.mjs selftest  # 联网验证判定逻辑
 ```
 SETUP.md           创建 Bot 的完整流程（5 步）
 src/core.js        唯一实现：判定 / 解析 / 探针 / 消息 / 命令（平台无关，纯函数可单测）
-src/config.js      配置装载（内置默认 = 番茄小说那套，开箱即用）
+src/config.js      配置装载（内置默认 = 盯番茄小说；换 App 不用改代码，见「配置」一节）
 src/storage.js     存储适配器：CF KV / Upstash Redis / 内存
 src/runner.js      编排：跑一轮 / 处理 update / 设 webhook / 体检 / 拿 chat_id
 src/worker.js      Cloudflare 入口（fetch + scheduled）
@@ -618,7 +627,13 @@ test/              134 项测试
 
 ## 配置（想改监控对象/发现源）
 
-不用改代码，设 `CONFIG_JSON` 环境变量（整段 JSON），会覆盖内置默认值：
+**先说最省事的两条路**（都不用改代码）：
+
+1. **在 TG 里加**：`/add <App名字>` —— 它自己去搜这个 App 的 TF 链接并加进监控；
+   当时还没有公开链接也能先记下，之后一出现就告诉你。新加的 App 的关键词会自动进发现过滤集，
+   所以 `/scan` 不会还只按番茄那套词找。`/del <码或名字>` 移出。
+2. **改环境变量**：设 `CONFIG_JSON`（整段 JSON），会覆盖内置默认值 ——
+   适合"换掉内置的番茄小说默认配置、改成自己那一套"：
 
 ```json
 {
@@ -630,6 +645,9 @@ test/              134 项测试
   "autoWatchKeywords": ["番茄小说"]
 }
 ```
+
+> 内置默认值（`src/config.js` 的 `DEFAULT_CONFIG`）就是上面这套 —— 盯番茄小说。
+> 它只是**默认值**：`watch` 换成别的码、`keywords` 换成别的词，机器人就完全不管番茄了。
 
 `keywords` 决定**哪些发现值得推送**；`autoWatchKeywords` 决定**哪些发现自动纳入监控**
 （更严 —— 免得"番茄助眠"这种同名 App 被自动盯上）。
