@@ -32,7 +32,7 @@ test("项目内样本与工作区共用样本逐字节一致（两份都存在�
     assert.ok(
       a.equals(b),
       `样本漂移了：${f}\n  项目内 ${join(LOCAL_DIR, f)}\n  工作区 ${join(SHARED_DIR, f)}\n` +
-      `  重新同步：cp tg-tf-monitor/tests/fixtures/*.html tg-tf-monitor-cloud/test/fixtures/`
+      `  重新同步：cp tg-tf-monitor-local/tests/fixtures/*.html tg-tf-monitor-cloud/test/fixtures/`
     );
   }
 });
