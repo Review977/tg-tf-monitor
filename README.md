@@ -2,7 +2,7 @@
 
 盯 **TestFlight 公测链接**的 Telegram 机器人 —— **任何 App 都能加**，**无服务器版**。
 部署到 Cloudflare Workers 或 Vercel，不用自己开机器、不用一直挂着。
-内置默认盯的是**番茄小说**（开箱即用）；换成别的 App **不用改代码**，在 TG 里发 `/add <名字>` 就行。
+想盯哪个 App **不用改代码**，在 TG 里发 `/add <名字>` 就行。
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/Review977/tg-tf-monitor)
 [![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2FReview977%2Ftg-tf-monitor&env=TG_TOKEN,TG_CHAT_ID,TG_WEBHOOK_SECRET,ADMIN_KEY,UPSTASH_REDIS_REST_URL,UPSTASH_REDIS_REST_TOKEN&envDescription=TG_TOKEN%20%E4%BB%8E%20%40BotFather%20%E6%8B%BF%EF%BC%9BTG_CHAT_ID%20%E7%94%A8%20%2Fchat-id%20%E7%AB%AF%E7%82%B9%E6%9F%A5%EF%BC%9B%E4%B8%A4%E4%B8%AA%E9%9A%8F%E6%9C%BA%E4%B8%B2%E7%94%A8%20openssl%20rand%20-hex%2024%20%E7%94%9F%E6%88%90%EF%BC%9BUpstash%20%E4%B8%A4%E9%A1%B9%E4%BB%85%20Vercel%20%E9%9C%80%E8%A6%81&project-name=tg-tf-monitor&repository-name=tg-tf-monitor)
