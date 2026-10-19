@@ -11,7 +11,7 @@
  * 用法：整个文件贴进 Cloudflare 控制台的 Worker 编辑器即可。
  * 该产物已被 test/handler.test.mjs 实际 import 并跑过断言。
  *
- * 源码指纹（sha256 前 16 位）：14acc337965e39b6
+ * 源码指纹（sha256 前 16 位）：1c6130b50455d7c4
  * ⚠️ 这里刻意**不放构建时间** —— 放了构建就不可复现，
  *    CI 里"产物必须与源码同步"那条检查会永远失败（这是被 CI 抓出来的）。
  */
@@ -1194,13 +1194,52 @@ const FEATURES = [
   "human-time",          // 相对时间（3 分钟前）
 ];
 
-/** 关键词 = 全局配置 ∪ 各在监控 App 派生的（新加的 App 才会被 /scan 捞到） */
-function effectiveKeywords(cfg, state) {
-  const set = new Set(cfg.keywords || []);
-  for (const rec of Object.values(state.links || {})) {
-    for (const k of rec.keywords || []) set.add(k);
+/**
+ * 监控里那些 App 派生出来的"名字"（label / appName / 关键词）。
+ *
+ * 用途只有一个：让**新加的 App** 也能被发现源捞到 —— 否则 `/scan` 永远只按配置里那套
+ * 全局关键词过滤，新加的 App 等于白加。
+ *
+ * ⚠️ 但它和 `cfg.keywords` 的匹配方式**必须不同**，原因见 `discoveryRelevant()`。
+ */
+function watchedNames(state) {
+  const out = new Set();
+  for (const rec of Object.values((state && state.links) || {})) {
+    const cands = [rec && rec.label, rec && rec.appName, ...((rec && rec.keywords) || [])];
+    for (const n of cands) {
+      const s = String(n == null ? "" : n).trim();
+      if (s) out.add(s);
+    }
   }
-  return [...set];
+  return [...out];
+}
+
+/**
+ * 这条发现值不值得推（发现源的过滤门）。
+ *
+ * ⚠️ 两套关键词的匹配方式**不一样** —— 这是 2026-10-19 老板实测报出来的：
+ *
+ *   · `keywords`（用户自己配的全局关键词）→ **子串**匹配。
+ *     意图明确，而且必须宽松：配了"番茄小说"就要能命中
+ *     "番茄小说 - 热门短剧全本小说电子书阅读器"。
+ *
+ *   · `watched`（监控里那些 App 派生出来的名字）→ 按**身份**匹配（sameAppName）。
+ *     老板加过一条「App 级监控：微信」，它派生出关键词 "微信"；混在一起做子串匹配时
+ *     `"微信输入法".includes("微信")` 成立 —— 于是他收到一条「微信输入法」的链接告警，
+ *     而他从没加过那个 App（消息里还写着"未自动加入监控"，自相矛盾）。
+ *     这和当初 sameAppName() 修的是同一类错：**身份判断不能用 includes**。
+ *
+ *   · 例外：拿不到应用名时（TG 频道那种只有正文的源）没有名字可比，退回子串 ——
+ *     宁可多推一条，也不要把那条源整个变成瞎子。
+ */
+function discoveryRelevant({ keywords = [], watched = [] } = {}, { appName = "", context = "" } = {}) {
+  const blob = (String(appName || "") + " " + String(context || "")).trim();
+  if (!keywords.length && !watched.length) return true;      // 什么都没配 = 不过滤（保持原行为）
+  if (keywords.length && relevant({ keywords }, blob)) return true;
+  if (!watched.length) return false;
+  const name = String(appName || "").trim();
+  if (name) return watched.some((n) => sameAppName(n, name));
+  return watched.some((n) => blob.toLowerCase().includes(String(n).toLowerCase()));
 }
 
 /** 发现扫描用的 tfstore 查询词 = 配置里的 ∪ 各在监控 App 的名字（带上限，别把请求数打爆） */
@@ -1931,9 +1970,14 @@ async function runDiscovery({ cfg, state, notifier, log = () => {}, fetchImpl, o
 
   // 关键词与 tfstore 查询词都要**并上各在监控 App 自己派生的** ——
   // 否则新加一个 App，发现源仍然只按番茄那套词过滤，等于白加。
-  const kws = effectiveKeywords(cfg, state);
-  const isRelevant = (t) => relevant({ keywords: kws }, t);
-  log(`  关键词 ${kws.length} 个：${kws.slice(0, 6).join(" / ")}${kws.length > 6 ? " …" : ""}`);
+  //
+  // ⚠️ 两套过滤规则不同：全局关键词按**子串**（用户自己配的，要宽松），
+  // 监控 App 派生的名字按**身份**（否则"盯微信"会把「微信输入法」也推给你）——
+  // 详见 discoveryRelevant() 的注释。appName 能拿到时按身份比，拿不到（TG 频道）退回子串。
+  const globalKw = cfg.keywords || [];
+  const watched = watchedNames(state);
+  const isRelevant = (blob, appName = "") => discoveryRelevant({ keywords: globalKw, watched }, { appName, context: blob });
+  log(`  过滤：全局关键词 ${globalKw.length} 个（子串）+ 监控 App 名 ${watched.length} 个（按身份）`);
 
   const sources = [];
   const depIds = new Set(d.departuresApps || []);
@@ -1967,7 +2011,7 @@ async function runDiscovery({ cfg, state, notifier, log = () => {}, fetchImpl, o
         const hits = await probeTfstore(q, { fetchImpl, log });
         log(`  tfstore「${q}」→ ${hits.length} 条`);
         for (const h of hits) {
-          if (isRelevant(h.appName)) n += await registerDiscovery({ cfg, state, notifier, log, fetchImpl }, h);
+          if (isRelevant(h.appName, h.appName)) n += await registerDiscovery({ cfg, state, notifier, log, fetchImpl }, h);
         }
         return n;
       },
@@ -1982,7 +2026,7 @@ async function runDiscovery({ cfg, state, notifier, log = () => {}, fetchImpl, o
           const hits = await probeBing(q, { fetchImpl, log });
           log(`  Bing「${q}」→ ${hits.length} 条含 join 码`);
           for (const h of hits) {
-            if (isRelevant((h.context || "") + " " + (h.appName || ""))) {
+            if (isRelevant((h.context || "") + " " + (h.appName || ""), h.appName)) {
               n += await registerDiscovery({ cfg, state, notifier, log, fetchImpl }, h);
             }
           }
@@ -1998,7 +2042,7 @@ async function runDiscovery({ cfg, state, notifier, log = () => {}, fetchImpl, o
           const hits = await probeSo360(q, { fetchImpl, log });
           log(`  360搜索「${q}」→ ${hits.length} 条含 join 码`);
           for (const h of hits) {
-            if (isRelevant((h.context || "") + " " + (h.appName || ""))) {
+            if (isRelevant((h.context || "") + " " + (h.appName || ""), h.appName)) {
               n += await registerDiscovery({ cfg, state, notifier, log, fetchImpl }, h);
             }
           }
@@ -2015,7 +2059,7 @@ async function runDiscovery({ cfg, state, notifier, log = () => {}, fetchImpl, o
         const hits = await probeTgChannel(ch, { fetchImpl, log });
         log(`  TG @${ch} → ${hits.length} 条含 join 码`);
         for (const h of hits) {
-          if (isRelevant(h.context || "")) {
+          if (isRelevant(h.context || "", h.appName)) {
             n += await registerDiscovery({ cfg, state, notifier, log, fetchImpl }, h);
           }
         }
@@ -2209,6 +2253,11 @@ async function handleCommand({ cfg, state, notifier, text, chatId, log = () => {
     await notifier.send(`✅ 测试消息：机器人工作正常（${nowStr()}）`);
   } else if (cmd === "/sources") {
     const d = cfg.discovery || {};
+    // 把**实际生效**的过滤条件打出来 —— 以前只打 cfg.keywords，于是"为什么这条被推了"
+    // 在机器人自己的输出里根本看不出来（老板 2026-10-19 就是这么被绕住的：
+    // 他加过「微信」，派生出的关键词让「微信输入法」也被推了）。
+    const watched = watchedNames(state);
+    const shownWatched = watched.slice(0, 12);
     await notifier.send([
       "<b>发现源配置</b>",
       `departures.to apps：${esc(JSON.stringify(d.departuresApps || []))}`,
@@ -2216,7 +2265,13 @@ async function handleCommand({ cfg, state, notifier, text, chatId, log = () => {
       `网页搜索查询：${esc(JSON.stringify(d.webQueries || []))}`,
       `  引擎：Bing=${esc(d.useBing !== false)} / 360=${esc(d.useSo360 !== false)}`,
       `TG 频道：${esc(JSON.stringify(d.telegramChannels || []))}`,
-      `推送关键词：${esc(JSON.stringify(cfg.keywords || []))}`,
+      "",
+      "<b>推送过滤（决定什么会打扰你）</b>",
+      `· 全局关键词（按<b>子串</b>匹配）：${esc(JSON.stringify(cfg.keywords || []))}`,
+      `· 监控里这些 App 的名字（按<b>身份</b>匹配，不做子串）：` +
+        `${esc(JSON.stringify(shownWatched))}${watched.length > shownWatched.length ? ` …共 ${watched.length} 个` : ""}`,
+      `<i>所以「盯微信」不会把「微信输入法」推给你；只有同一个 App（或它的副标题变体）才算。</i>`,
+      "",
       `自动监控关键词：${esc(JSON.stringify(cfg.autoWatchKeywords || []))}`,
       `自动监控新发现：${esc(cfg.autoWatchDiscovered)}`,
       `监控间隔：${esc(cfg.intervalMinutes)} 分钟`,

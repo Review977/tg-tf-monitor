@@ -13,7 +13,7 @@ import { join } from "node:path";
 
 import {
   enrichApp, deriveKeywords, probeItunesSearch, probeDeparturesSearch,
-  effectiveKeywords, effectiveTfstoreQueries, renderApps, findApp,
+  watchedNames, discoveryRelevant, effectiveTfstoreQueries, renderApps, findApp,
   handleCommand, normalizeState, makeNotifier,
 } from "../src/core.js";
 import { FIXTURES_DIR } from "./fixtures-dir.mjs";
@@ -143,13 +143,13 @@ test("enrichApp：iTunes 抛错时不整体失败，只记一条提醒", async (
 
 // ───────────────────── 关键词/查询词合并 ─────────────────────
 
-test("effectiveKeywords：并上各 App 自己的关键词（否则新加的 App 在 /scan 里永远匹配不上）", () => {
-  const cfg = { keywords: ["番茄小说"] };
-  const state = normalizeState({ links: { abc: { keywords: ["微信读书", "com.tencent.weread"] } } });
-  const kws = effectiveKeywords(cfg, state);
-  assert.ok(kws.includes("番茄小说"));
-  assert.ok(kws.includes("微信读书"));
-  assert.ok(kws.includes("com.tencent.weread"));
+test("watchedNames + discoveryRelevant：监控里的 App 自己要能被发现源捞到", () => {
+  const state = normalizeState({ links: { abc: { label: "微信读书", appName: "微信读书", keywords: ["微信读书", "com.tencent.weread"] } } });
+  const names = watchedNames(state);
+  assert.ok(names.includes("微信读书"));
+  assert.ok(names.includes("com.tencent.weread"));
+  assert.ok(discoveryRelevant({ keywords: ["番茄小说"], watched: names }, { appName: "微信读书" }),
+    "监控里的 App 本身必须能过（否则新加 App 等于白加）");
 });
 
 test("effectiveTfstoreQueries：带上各 App 的名字，且有上限", () => {
@@ -601,14 +601,16 @@ test("/find 命令走通（先回「正在搜」再给结果）", async () => {
 
 // ───────────────────── 端到端：加完之后发现源认它 ─────────────────────
 
-test("端到端：加一个 App 后，它的关键词进入发现过滤（新 App 才会被 /scan 捞到）", async () => {
+test("端到端：加一个 App 后，它的名字进入发现过滤（新 App 才会被 /scan 捞到）", async () => {
   const { f } = makeFetch();
   const state = normalizeState(null);
   const { notifier } = collector();
   const cfg = { telegram: {}, keywords: ["番茄小说"], discovery: { tfstoreQueries: [] } };
   await handleCommand({ cfg, state, notifier, text: "/add dTUO1uyt", fetchImpl: f });
-  const kws = effectiveKeywords(cfg, state);
-  assert.ok(kws.some((k) => k.includes("番茄")), "新加 App 的关键词要进过滤集");
+  const names = watchedNames(state);
+  assert.ok(names.some((k) => k.includes("番茄")), "新加 App 的名字要进过滤集");
+  assert.ok(discoveryRelevant({ keywords: cfg.keywords, watched: names },
+    { appName: "番茄小说 - 热门短剧全本小说电子书阅读器" }), "新加的 App 本身要能被捞到");
   assert.ok(effectiveTfstoreQueries(cfg, state).length > 0, "tfstore 查询词也要带上它");
 });
 
@@ -1261,15 +1263,27 @@ test("/add dep=<id> 也要接受 appstore= / bundle=（以前被静默丢弃）"
 
 // ───────────────────── 发送前的消息安全仍然成立 ─────────────────────
 
-test("新增的 /apps、/find 输出都能过 Telegram 的 HTML 校验", async () => {
+test("新增的 /apps、/find、/sources 输出都能过 Telegram 的 HTML 校验", async () => {
   const { tgHtmlCheck } = await import("../src/core.js");
   const { f } = makeFetch();
   const dirty = normalizeState({
     links: { abcdef: { label: "某 <App> & 名字", appName: "某 <App> & 名字", state: "open", keywords: ["a<b"] } },
   });
-  for (const text of [renderApps(dirty), await findApp({ state: dirty, query: "a&b", fetchImpl: f })]) {
+  const texts = [renderApps(dirty), await findApp({ state: dirty, query: "a&b", fetchImpl: f })];
+  // /sources 会把关键词和监控 App 名原样打出来 —— 带 < & 时也不能把整条消息搞成非法 HTML
+  const c = collector();
+  await handleCommand({
+    cfg: {
+      telegram: {}, intervalMinutes: 30,
+      keywords: ["a<b", "x&y"], autoWatchKeywords: ["<z>"],
+      discovery: { tfstoreQueries: ["q<1"], departuresApps: [] },
+    },
+    state: dirty, notifier: c.notifier, text: "/sources",
+  });
+  texts.push(...c.sent);
+  for (const text of texts) {
     const [ok, why] = tgHtmlCheck(text);
-    assert.ok(ok, "消息必须合法：" + why);
+    assert.ok(ok, "消息必须合法：" + why + "\n" + text);
   }
 });
 
@@ -1585,4 +1599,72 @@ test("⭐ 回归：发现源被反爬拦住时要出声（360 返回验证码页
     assert.deepEqual(r, []);
     assert.ok(l.some((m) => /503/.test(m)), `${name} 非 200 也要说出来：` + l.join("|"));
   }
+});
+
+// ═══════════ 2026-10-19：老板实测「没加过微信输入法，却被推了它的链接」 ═══════════
+
+test("⭐ 回归：加了「微信」之后，「微信输入法」的链接不能被推（身份匹配，不是子串）", async () => {
+  // 实测经过：他加过一条 App 级监控「微信」（微信本体没有公开 TF 链接），
+  // 这条记录派生出关键词 "微信"；旧的推送过滤把全局关键词和它混在一起做**子串**匹配，
+  // 于是 "微信输入法".includes("微信") 成立 -> 推了一条「微信输入法」的告警，
+  // 而消息里自己还写着"未自动加入监控"（自相矛盾）。截图见 2026-10-19。
+  const { discoveryRelevant, watchedNames, normalizeState, runDiscovery } = await import("../src/core.js");
+
+  // ① 纯函数层：两套关键词的匹配方式必须不同
+  const watched = ["微信", "com.tencent.xin"];
+  assert.equal(discoveryRelevant({ keywords: ["番茄小说"], watched }, { appName: "微信输入法" }), false,
+    "「微信输入法」不是「微信」—— 按身份匹配必须拦住它");
+  assert.equal(discoveryRelevant({ keywords: ["番茄小说"], watched }, { appName: "微信读书" }), false,
+    "「微信读书」也不是「微信」");
+  assert.equal(discoveryRelevant({ keywords: ["番茄小说"], watched }, { appName: "微信" }), true,
+    "监控里的 App 本身要能过");
+  assert.equal(discoveryRelevant({ keywords: ["番茄小说"], watched }, { appName: "番茄小说 - 热门短剧全本小说电子书阅读器" }), true,
+    "全局关键词仍然是子串匹配：配了「番茄小说」要能命中带副标题的全名");
+  assert.equal(discoveryRelevant({ keywords: [], watched: ["微信读书"] }, { appName: "微信读书 - 小说" }), true,
+    "监控里的 App 的副标题变体也算同一个 App");
+  assert.equal(discoveryRelevant({ keywords: [], watched: ["微信"] }, { context: "微信 内测 链接" }), true,
+    "拿不到应用名时（TG 频道只有正文）退回子串 —— 别把那条源变成瞎子");
+
+  // ② 端到端：tfstore 搜到「微信输入法」的可加入链接，一条消息都不该发
+  const state = normalizeState({
+    links: { "app:414478124": { kind: "app", label: "微信", appName: "微信", keywords: ["微信", "com.tencent.xin"], codes: [], firstSeen: "2026-10-14T00:00:00Z" } },
+    // 上一轮扫到过、当时满员 —— 和截图里「🔄 之前发现的链接状态变了」一致
+    discoveries: { "406CX1N8": { source: "tfstore.top", code: "406CX1N8", appName: "微信输入法", state: "full", foundAt: "2026-10-18T00:00:00Z", notified: false, unsent: false } },
+  });
+  const cfg = {
+    keywords: ["番茄小说", "番茄免费小说", "番茄畅听", "dragon.read", "fqnovel", "fanqie"],
+    autoWatchKeywords: ["番茄小说", "dragon.read", "fqnovel", "fanqie"],
+    autoWatchDiscovered: true,
+    discovery: { useDepartures: false, departuresApps: [], tfstoreQueries: ["微信"], webQueries: [], telegramChannels: [] },
+  };
+  const f = async (url) => {
+    const s = String(url);
+    if (s.includes("tfstore.top")) {
+      return new Response(`<script type="application/ld+json">{"@type":"ItemList","itemListElement":[{"@type":"ListItem","url":"https://tfstore.top/zh-CN/apps/406CX1N8","name":"微信输入法"}]}</script>`, { status: 200, headers: { "content-type": "text/html" } });
+    }
+    if (s.includes("/join/406CX1N8")) return htmlRes(load("open_zh.html"));
+    if (s.includes("api.telegram.org")) return jsonRes({ ok: true, result: { message_id: 1 } });
+    return new Response("", { status: 404 });
+  };
+  const sent = [];
+  await runDiscovery({ cfg, state, notifier: { dry: false, async send(t) { sent.push(t); return true; } }, log: () => {}, fetchImpl: f });
+  assert.deepEqual(sent, [], "「微信输入法」不该被推给用户：\n" + sent.join("\n"));
+  assert.ok(!state.links["406CX1N8"], "也不该被加进监控");
+
+  // ③ 同一套过滤下，监控里的「微信读书」仍然要能过（别修过头）
+  const state2 = normalizeState({
+    links: { "app:1": { kind: "app", label: "微信读书", appName: "微信读书", keywords: ["微信读书"], codes: [] } },
+  });
+  const f2 = async (url) => {
+    const s = String(url);
+    if (s.includes("tfstore.top")) {
+      return new Response(`<script type="application/ld+json">{"@type":"ItemList","itemListElement":[{"@type":"ListItem","url":"https://tfstore.top/zh-CN/apps/7Jg9MM8h","name":"微信读书"}]}</script>`, { status: 200, headers: { "content-type": "text/html" } });
+    }
+    if (s.includes("/join/7Jg9MM8h")) return htmlRes(load("open_zh.html"));
+    if (s.includes("api.telegram.org")) return jsonRes({ ok: true, result: { message_id: 1 } });
+    return new Response("", { status: 404 });
+  };
+  const sent2 = [];
+  await runDiscovery({ cfg, state: state2, notifier: { dry: false, async send(t) { sent2.push(t); return true; } }, log: () => {}, fetchImpl: f2 });
+  assert.equal(sent2.length, 1, "监控里的「微信读书」出了可加入链接，必须告诉老板：\n" + sent2.join("\n"));
 });
